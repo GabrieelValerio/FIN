@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Administração - Fin</title>
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <main class="pagina">
+    <p><a href="inicio.html">← Início</a></p>
+    <h1>Administração</h1>
+    <p id="msg"></p>
+
+    <table id="tabela" hidden>
+      <thead><tr><th>Usuário</th><th>E-mail</th><th class="num">Campanhas</th><th class="num">Personagens</th><th></th></tr></thead>
+      <tbody id="corpo"></tbody>
+    </table>
+
+    <hr>
+    <h2>Mudar senha</h2>
+    <p><input id="senhaAtual" type="password" placeholder="Senha atual"></p>
+    <p><input id="senhaNova" type="password" placeholder="Nova senha (mínimo 6 caracteres)"></p>
+    <p><input id="senhaNova2" type="password" placeholder="Repita a nova senha"></p>
+    <button id="btnSenha" class="principal">Mudar senha</button>
+    <p id="msgSenha"></p>
+  </main>
+
+  <script type="module">
+    import { aoMudarLogin, souAdmin, adminCarregar, adminRenomearCampanha, adminApagarCampanha,
+             adminRenomearPersonagem, adminApagarPersonagem, mudarSenha } from "./db.js";
+
+    const $ = (id) => document.getElementById(id);
+    const el = (tag, texto) => { const e = document.createElement(tag); if (texto !== undefined) e.textContent = texto; return e; };
+    const ERROS = {
+      "auth/invalid-credential": "Senha atual incorreta.",
+      "auth/wrong-password": "Senha atual incorreta.",
+      "auth/too-many-requests": "Muitas tentativas. Aguarde um pouco."
+    };
+    let dados;
+    const abertos = new Set();
+
+    function botao(texto, fn, classe) {
+      const b = el("button", texto);
+      b.onclick = fn;
+      if (classe) b.className = classe;
+      return b;
+    }
+    async function tentar(fn) {
+      try { $("msg").textContent = ""; await fn(); await recarregar(); }
+      catch (e) { $("msg").textContent = "Erro: " + e.message; }
+    }
+
+    function agrupar(d) {
+      const mapa = {};
+      d.usuarios.forEach((u) => { mapa[u.id] = { id: u.id, nome: u.nome || "(sem nome)", email: u.email || "", campanhas: [], personagens: [] }; });
+      const garantir = (uid, nome) => mapa[uid] || (mapa[uid] = { id: uid, nome: nome || uid.slice(0, 6) + "…", email: "", campanhas: [], personagens: [] });
+      d.personagens.forEach((p) => garantir(p.donoUid, p.donoNome).personagens.push(p));
+      d.campanhas.forEach((c) => garantir(c.mestreUid).campanhas.push(c));
+      return Object.values(mapa).sort((a, b) => a.nome.localeCompare(b.nome));
+    }
+
+    function detalhe(u) {
+      const div = el("div");
+      div.append(el("h3", "Campanhas"));
+      const ulC = el("ul");
+      ulC.className = "det";
+      u.campanhas.forEach((c) => {
+        const li = el("li");
+        li.append(c.nome + " (código " + c.codigo + ") ",
+          botao("Renomear", () => tentar(async () => {
+            const n = prompt("Novo nome da campanha:", c.nome);
+            if (n !== null) await adminRenomearCampanha(c.id, c.codigo, n);
+          })),
+          botao("Apagar", () => tentar(async () => {
+            if (!confirm("Apagar a campanha " + c.nome + "? Os personagens dela ficam sem campanha.")) return;
+            await adminApagarCampanha(c.id, c.codigo, dados.personagens.filter((p) => p.campanhaId === c.id).map((p) => p.id));
+          }), "perigo"));
+        ulC.append(li);
+      });
+      if (!u.campanhas.length) ulC.append(el("li", "Nenhuma campanha."));
+      div.append(ulC, el("h3", "Personagens"));
+
+      const ulP = el("ul");
+      ulP.className = "det";
+      u.personagens.forEach((p) => {
+        const camp = dados.campanhas.find((c) => c.id === p.campanhaId);
+        const li = el("li");
+        const ver = el("a", "Ver ficha");
+        ver.href = "personagem.html?id=" + p.id;
+        li.append(p.nome + " - " + (camp ? camp.nome : "sem campanha") + " ", ver, " ",
+          botao("Renomear", () => tentar(async () => {
+            const n = prompt("Novo nome do personagem:", p.nome);
+            if (n !== null) await adminRenomearPersonagem(p.id, n);
+          })),
+          botao("Apagar", () => tentar(async () => {
+            if (!confirm("Apagar o personagem " + p.nome + " para sempre?")) return;
+            await adminApagarPersonagem(p.id);
+          }), "perigo"));
+        ulP.append(li);
+      });
+      if (!u.personagens.length) ulP.append(el("li", "Nenhum personagem."));
+      div.append(ulP);
+      return div;
+    }
+
+    function desenhar() {
+      $("corpo").replaceChildren(...agrupar(dados).flatMap((u) => {
+        const tr = el("tr"), det = el("tr");
+        const dtd = el("td");
+        dtd.colSpan = 5;
+        dtd.append(detalhe(u));
+        det.append(dtd);
+        det.hidden = !abertos.has(u.id);
+        const nC = el("td", u.campanhas.length), nP = el("td", u.personagens.length);
+        nC.className = nP.className = "num";
+        const acao = el("td");
+        acao.append(botao("Ver", () => {
+          if (abertos.has(u.id)) abertos.delete(u.id); else abertos.add(u.id);
+          det.hidden = !abertos.has(u.id);
+        }));
+        tr.append(el("td", u.nome), el("td", u.email), nC, nP, acao);
+        return [tr, det];
+      }));
+    }
+
+    async function recarregar() {
+      dados = await adminCarregar();
+      desenhar();
+    }
+
+    $("btnSenha").onclick = async () => {
+      const msg = (t) => { $("msgSenha").textContent = t; };
+      try {
+        if ($("senhaNova").value !== $("senhaNova2").value) throw new Error("As senhas novas não são iguais.");
+        await mudarSenha($("senhaAtual").value, $("senhaNova").value);
+        $("senhaAtual").value = $("senhaNova").value = $("senhaNova2").value = "";
+        msg("Senha alterada.");
+      } catch (e) { msg("Erro: " + (ERROS[e.code] || e.message)); }
+    };
+
+    aoMudarLogin(async (user) => {
+      if (!user) { location.href = "login.html"; return; }
+      if (!(await souAdmin())) { $("msg").textContent = "Acesso restrito a administradores."; return; }
+      $("tabela").hidden = false;
+      try { await recarregar(); } catch (e) { $("msg").textContent = "Erro: " + e.message; }
+    });
+  </script>
+</body>
+</html>
