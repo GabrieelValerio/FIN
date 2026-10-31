@@ -4,7 +4,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChang
          EmailAuthProvider, reauthenticateWithCredential, updatePassword }
   from "https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js";
 import { getFirestore, collection, doc, getDoc, getDocs, query, where, writeBatch,
-         updateDoc, setDoc, onSnapshot, deleteField, serverTimestamp }
+         updateDoc, setDoc, addDoc, deleteDoc, orderBy, limit, onSnapshot, deleteField, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/13.1.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -133,6 +133,7 @@ export async function vincularPersonagem(persId, codigo) {
 }
 
 // ---------- Ao vivo: junta as mudanças e grava 1,5 s depois do último clique ----------
+const arenaDe = {}; // personagem -> arena em que está
 const pendentes = {};
 const timers = {};
 
@@ -147,7 +148,10 @@ export async function enviarVivo(persId) {
   const dados = pendentes[persId];
   if (!dados) return;
   delete pendentes[persId];
-  await updateDoc(doc(db, "vivo", persId), { ...dados, atualizadoEm: serverTimestamp() });
+  const extra = { ...dados, atualizadoEm: serverTimestamp() };
+  await updateDoc(doc(db, "vivo", persId), extra);
+  // se o personagem está numa arena, espelha os pontos para quem está lá
+  if (arenaDe[persId]) updateDoc(doc(db, "arenas", arenaDe[persId], "membros", persId), extra).catch(() => {});
 }
 
 // ---------- Ficha completa (botão Salvar) ----------
@@ -183,7 +187,10 @@ export async function renomearPersonagem(persId, nome) {
 }
 
 export async function apagarPersonagem(persId) {
+  const cod = ((await getDoc(doc(db, "personagens", persId))).data() || {}).codigoVer;
   const batch = writeBatch(db);
+  if (cod) batch.delete(doc(db, "codigosFicha", cod));
+  batch.delete(doc(db, "personagens", persId, "midia", "imagens"));
   batch.delete(doc(db, "personagens", persId));
   batch.delete(doc(db, "vivo", persId));
   await batch.commit();
@@ -294,3 +301,172 @@ export async function adminApagarCampanha(campId, codigo, persIds) {
 
 export const adminRenomearPersonagem = renomearPersonagem;
 export const adminApagarPersonagem = apagarPersonagem;
+
+// ---------- Imagens do personagem (normal e ferido), guardadas reduzidas no Firestore ----------
+const refImagens = (persId) => doc(db, "personagens", persId, "midia", "imagens");
+
+export async function getImagens(persId) {
+  const s = await getDoc(refImagens(persId));
+  return s.exists() ? s.data() : {};
+}
+export const salvarImagem = (persId, qual, dataUrl) =>
+  setDoc(refImagens(persId), { [qual]: dataUrl, atualizadoEm: serverTimestamp() }, { merge: true });
+export const removerImagem = (persId, qual) =>
+  updateDoc(refImagens(persId), { [qual]: deleteField(), atualizadoEm: serverTimestamp() });
+
+// ---------- Código do personagem: ver a ficha em modo leitura ----------
+export async function gerarCodigoFicha(persId, antigo) {
+  const uid = auth.currentUser.uid;
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
+    const codigo = gerarCodigo();
+    const batch = writeBatch(db);
+    batch.set(doc(db, "codigosFicha", codigo), { persId, donoUid: uid });
+    if (antigo) batch.delete(doc(db, "codigosFicha", antigo));
+    batch.update(doc(db, "personagens", persId), { codigoVer: codigo, compartilhado: true });
+    batch.update(doc(db, "vivo", persId), { compartilhado: true, compartVersao: Date.now() });
+    try {
+      await batch.commit();
+      return codigo;
+    } catch (e) {
+      if (tentativa === 4) throw e;
+    }
+  }
+}
+
+export async function desativarCodigoFicha(persId, codigo) {
+  const batch = writeBatch(db);
+  batch.delete(doc(db, "codigosFicha", codigo));
+  batch.update(doc(db, "personagens", persId), { codigoVer: null, compartilhado: false });
+  batch.update(doc(db, "vivo", persId), { compartilhado: false, compartVersao: Date.now() });
+  await batch.commit();
+}
+
+export async function buscarFichaPorCodigo(codigo) {
+  const s = await getDoc(doc(db, "codigosFicha", codigo.trim().toUpperCase()));
+  if (!s.exists()) throw new Error("Código não encontrado.");
+  return s.data().persId;
+}
+
+// ---------- Termos de uso e atualizações ----------
+export const TERMOS_VERSAO = 1; // aumente este número se mudar os termos: todos aceitam de novo
+
+export async function perfilUsuario() {
+  const s = await getDoc(doc(db, "usuarios", auth.currentUser.uid));
+  return s.exists() ? s.data() : {};
+}
+export const aceitarTermos = () => setDoc(doc(db, "usuarios", auth.currentUser.uid),
+  { termosVersao: TERMOS_VERSAO, termosEm: serverTimestamp() }, { merge: true });
+export const marcarAtualizacaoVista = (id) => setDoc(doc(db, "usuarios", auth.currentUser.uid),
+  { atualizacaoVista: id }, { merge: true });
+
+export async function ultimasAtualizacoes(n) {
+  const q = query(collection(db, "atualizacoes"), orderBy("criadoEm", "desc"), limit(n));
+  return (await getDocs(q)).docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+export const publicarAtualizacao = (titulo, texto) =>
+  addDoc(collection(db, "atualizacoes"), { titulo: titulo.trim(), texto: texto.trim(), criadoEm: serverTimestamp() });
+export const apagarAtualizacao = (id) => deleteDoc(doc(db, "atualizacoes", id));
+
+// ---------- Arenas (duram no máximo 3 horas) ----------
+export const definirArena = (persId, arenaId) => { if (arenaId) arenaDe[persId] = arenaId; else delete arenaDe[persId]; };
+
+export async function minhasArenas() {
+  const q = query(collection(db, "arenas"), where("criadorUid", "==", auth.currentUser.uid));
+  return (await getDocs(q)).docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function getArena(id) {
+  const s = await getDoc(doc(db, "arenas", id));
+  return s.exists() ? { id: s.id, ...s.data() } : null;
+}
+
+export async function criarArena(nome) {
+  nome = nome.trim();
+  if (!nome) throw new Error("Digite o nome da arena.");
+  const ativas = (await minhasArenas()).filter((a) => a.expiraEm.toMillis() > Date.now());
+  if (ativas.length >= 3) throw new Error("Você já tem 3 arenas ativas. Encerre uma antes.");
+  const uid = auth.currentUser.uid;
+  const ref = doc(collection(db, "arenas"));
+  const expiraEm = new Date(Date.now() + 3 * 60 * 60 * 1000);
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
+    const codigo = gerarCodigo();
+    const batch = writeBatch(db);
+    batch.set(ref, { nome, criadorUid: uid, codigo, criadaEm: serverTimestamp(), expiraEm });
+    batch.set(doc(db, "arenaCodigos", codigo), { arenaId: ref.id, criadorUid: uid, nome, expiraEm });
+    try {
+      await batch.commit();
+      return codigo;
+    } catch (e) {
+      if (tentativa === 4) throw e;
+    }
+  }
+}
+
+// Apaga a arena, o código e os pontos espelhados dos participantes
+export async function encerrarArena(arenaId, codigo) {
+  const membros = await getDocs(collection(db, "arenas", arenaId, "membros"));
+  const batch = writeBatch(db);
+  membros.docs.forEach((d) => batch.delete(d.ref));
+  batch.delete(doc(db, "arenaCodigos", codigo));
+  batch.delete(doc(db, "arenas", arenaId));
+  await batch.commit();
+}
+
+function instantaneo(v, exp) {
+  const u = auth.currentUser;
+  const zero = { atual: 0, total: 0 };
+  const s = {
+    donoUid: u.uid, nome: v.nome || "", donoNome: v.donoNome || u.displayName || "",
+    pv: v.pv || { atual: 0, total: 0, temp: 0 }, pc: v.pc || zero, pe: v.pe || zero, ps: v.ps || zero, cb: v.cb || zero,
+    morrendo: v.morrendo || 0, atualizadoEm: serverTimestamp()
+  };
+  if (v.pf) s.pf = v.pf;
+  if (exp) s.expiraEm = new Date(exp);
+  return s;
+}
+
+export async function entrarArena(persId, codigo, vivoLocal) {
+  const cs = await getDoc(doc(db, "arenaCodigos", codigo.trim().toUpperCase()));
+  if (!cs.exists()) throw new Error("Código de arena não encontrado.");
+  const { arenaId, nome, expiraEm } = cs.data();
+  const exp = expiraEm.toMillis();
+  if (exp <= Date.now()) throw new Error("Esta arena já terminou.");
+  const campos = { arenaId, arenaNome: nome, arenaExpira: exp };
+  const batch = writeBatch(db);
+  batch.update(doc(db, "personagens", persId), campos);
+  batch.update(doc(db, "vivo", persId), campos);
+  batch.set(doc(db, "arenas", arenaId, "membros", persId), instantaneo(vivoLocal, exp));
+  await batch.commit();
+  arenaDe[persId] = arenaId;
+  return { arenaId, nome, exp };
+}
+
+export async function sairArena(persId, arenaId) {
+  const nulos = { arenaId: null, arenaNome: null, arenaExpira: null };
+  const batch = writeBatch(db);
+  batch.update(doc(db, "personagens", persId), nulos);
+  batch.update(doc(db, "vivo", persId), nulos);
+  await batch.commit();
+  delete arenaDe[persId];
+  try { await deleteDoc(doc(db, "arenas", arenaId, "membros", persId)); } catch (e) {}
+}
+
+// Depois de salvar a ficha (nome ou PF podem ter mudado), atualiza o que os outros veem
+export async function espelharArena(persId, v) {
+  const aid = arenaDe[persId];
+  if (!aid) return;
+  const s = instantaneo(v, v.arenaExpira);
+  if (!v.pf) s.pf = deleteField();
+  await setDoc(doc(db, "arenas", aid, "membros", persId), s, { merge: true }).catch(() => {});
+}
+
+// Se a arena acabou ou foi apagada, solta os personagens meus que ainda apontam para ela
+export async function limparMinhaPresenca(arenaId) {
+  const q = query(collection(db, "personagens"),
+    where("donoUid", "==", auth.currentUser.uid), where("arenaId", "==", arenaId));
+  for (const d of (await getDocs(q)).docs) await sairArena(d.id, arenaId);
+}
+
+export const escutarArena = (arenaId, fn, aoErro) =>
+  onSnapshot(collection(db, "arenas", arenaId, "membros"),
+    (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), aoErro);
