@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Administração - Fin</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon.png?v=2">
   <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
@@ -17,6 +18,16 @@
       <tbody id="corpo"></tbody>
     </table>
 
+    <div id="restoAdmin" hidden>
+    <hr>
+    <h2>Atualizações</h2>
+    <p><small>Escreva o que mudou e clique em "Avisar o sistema". Quem entrar depois verá o aviso.</small></p>
+    <p><input id="atTitulo" placeholder="Título (ex.: Versão 1.2)"></p>
+    <p><textarea id="atTexto" placeholder="O que mudou..."></textarea></p>
+    <button id="btnAvisar" class="principal">Avisar o sistema</button>
+    <p id="msgAt"></p>
+    <ul id="listaAt"></ul>
+
     <hr>
     <h2>Mudar senha</h2>
     <p><input id="senhaAtual" type="password" placeholder="Senha atual"></p>
@@ -24,11 +35,13 @@
     <p><input id="senhaNova2" type="password" placeholder="Repita a nova senha"></p>
     <button id="btnSenha" class="principal">Mudar senha</button>
     <p id="msgSenha"></p>
+    </div>
   </main>
 
   <script type="module">
     import { aoMudarLogin, souAdmin, adminCarregar, adminRenomearCampanha, adminApagarCampanha,
-             adminRenomearPersonagem, adminApagarPersonagem, mudarSenha } from "./db.js";
+             adminRenomearPersonagem, adminApagarPersonagem, mudarSenha,
+             ultimasAtualizacoes, publicarAtualizacao, apagarAtualizacao } from "./db.js";
 
     const $ = (id) => document.getElementById(id);
     const el = (tag, texto) => { const e = document.createElement(tag); if (texto !== undefined) e.textContent = texto; return e; };
@@ -87,7 +100,7 @@
         const camp = dados.campanhas.find((c) => c.id === p.campanhaId);
         const li = el("li");
         const ver = el("a", "Ver ficha");
-        ver.href = "personagem.html?id=" + p.id;
+        ver.href = "personagem.html?id=" + p.id + "&de=admin";
         li.append(p.nome + " - " + (camp ? camp.nome : "sem campanha") + " ", ver, " ",
           botao("Renomear", () => tentar(async () => {
             const n = prompt("Novo nome do personagem:", p.nome);
@@ -129,6 +142,29 @@
       desenhar();
     }
 
+    async function carregarAt() {
+      const lista = await ultimasAtualizacoes(10);
+      $("listaAt").replaceChildren(...lista.map((a) => {
+        const li = el("li");
+        li.append(a.titulo + " ", botao("Apagar", async () => {
+          if (!confirm("Apagar este aviso?")) return;
+          try { await apagarAtualizacao(a.id); await carregarAt(); }
+          catch (e) { $("msgAt").textContent = "Erro: " + e.message; }
+        }, "perigo"));
+        return li;
+      }));
+    }
+
+    $("btnAvisar").onclick = async () => {
+      try {
+        if (!$("atTitulo").value.trim() || !$("atTexto").value.trim()) throw new Error("Preencha o título e o texto.");
+        await publicarAtualizacao($("atTitulo").value, $("atTexto").value);
+        $("atTitulo").value = $("atTexto").value = "";
+        $("msgAt").textContent = "Aviso publicado. Quem entrar agora verá as atualizações.";
+        await carregarAt();
+      } catch (e) { $("msgAt").textContent = "Erro: " + e.message; }
+    };
+
     $("btnSenha").onclick = async () => {
       const msg = (t) => { $("msgSenha").textContent = t; };
       try {
@@ -143,6 +179,8 @@
       if (!user) { location.href = "login.html"; return; }
       if (!(await souAdmin())) { $("msg").textContent = "Acesso restrito a administradores."; return; }
       $("tabela").hidden = false;
+      $("restoAdmin").hidden = false;
+      carregarAt().catch(() => {});
       try { await recarregar(); } catch (e) { $("msg").textContent = "Erro: " + e.message; }
     });
   </script>
