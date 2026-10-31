@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Painel ao vivo</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon.png?v=2">
   <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
@@ -42,9 +43,14 @@
     function linha(nome, r, temTemp, cor) {
       const d = el("div");
       d.className = "recurso";
+      if (["pv", "pc", "pe", "pf"].includes(cor)) d.classList.add("alerta");
+      if (["pv", "pc", "pe"].includes(cor)) d.classList.add("pisca");
+      const pct = r.total > 0 ? (r.atual / r.total) * 100 : 100;
+      if (r.total > 0 && pct < 50) d.classList.add("meio");
+      if (r.total > 0 && pct <= 25) d.classList.add("critico");
       const barra = el("div"), preenche = el("i");
       barra.className = "barra r-" + cor;
-      preenche.style.width = (r.total > 0 ? Math.max(0, Math.min(100, r.atual / r.total * 100)) : 0) + "%";
+      preenche.style.width = (r.total > 0 ? Math.max(0, Math.min(100, pct)) : 0) + "%";
       barra.append(preenche);
       d.append(el("span", nome + " " + r.atual + "/" + r.total + (temTemp && r.temp ? " (+" + r.temp + ")" : "")), barra);
       return d;
@@ -59,8 +65,15 @@
       if (p.ps && p.ps.total > 0) div.append(linha("PS", p.ps, false, "ps"));
       if (p.cb && p.cb.total > 0) div.append(linha("CB", p.cb, false, "cb"));
       if (p.pf) div.append(linha("PF", p.pf, false, "pf"));
+      if (p.pv && p.pv.total > 0 && p.pv.atual <= 0) {
+        const n = p.morrendo || 0;
+        const aviso = el("div", n >= 3 ? "MORTO" : "MORRENDO " + n + "/3");
+        aviso.className = "morrendo-aviso";
+        div.append(aviso);
+        if (n >= 3) div.classList.add("morto");
+      }
       const a = el("a", "Abrir ficha");
-      a.href = "personagem.html?id=" + p.id;
+      a.href = "personagem.html?id=" + p.id + "&de=campanha:" + id;
       div.append(a);
       return div;
     }
