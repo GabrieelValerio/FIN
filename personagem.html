@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ficha</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon.png?v=2">
   <link rel="stylesheet" href="estilo.css">
 </head>
 <body>
@@ -11,7 +12,7 @@
     <nav class="lateral" id="menu"></nav>
     <div class="conteudo">
       <header class="topo">
-        <a href="inicio.html">← Início</a>
+        <a id="voltar" href="inicio.html">← Início</a>
         <h1 id="titulo">Ficha</h1>
         <small id="subtitulo"></small>
         <p><button id="btnSalvar" class="principal">Salvar ficha</button> <span id="estado"></span></p>
@@ -22,12 +23,22 @@
 
   <script type="module">
     import { aoMudarLogin, getPersonagem, getCampanha, getVivo, escutarVivo, salvarVivo, enviarVivo,
-             salvarFicha, apagarPersonagem, vincularPersonagem, desvincularPersonagem } from "./db.js";
+             salvarFicha, apagarPersonagem, vincularPersonagem, desvincularPersonagem,
+             getImagens, salvarImagem, removerImagem, gerarCodigoFicha, desativarCodigoFicha, souAdmin,
+             entrarArena, sairArena, definirArena, espelharArena } from "./db.js";
 
     const $ = (id) => document.getElementById(id);
     const el = (tag, texto) => { const e = document.createElement(tag); if (texto) e.textContent = texto; return e; };
     const persId = new URLSearchParams(location.search).get("id");
-    let vivo, ficha, topo, somenteLeitura, areaVivo, nomeSalvo, abaAtual, campId, naoSalvo = false;
+    const de = new URLSearchParams(location.search).get("de") || "";
+    if (de.startsWith("campanha:")) {
+      $("voltar").href = "campanha.html?id=" + encodeURIComponent(de.slice(9));
+      $("voltar").textContent = "← Campanha";
+    } else if (de === "admin") {
+      $("voltar").href = "admin.html";
+      $("voltar").textContent = "← Administração";
+    }
+    let vivo, ficha, topo, somenteLeitura, areaVivo, nomeSalvo, abaAtual, campId, codigoVer, arenaId, arenaNome, viaCodigo, versaoCompart, encerrando = false, imagens = {}, naoSalvo = false;
 
     const PERICIAS = [
       ["atletismo","Atletismo","FOR"],["furtividade","Furtividade","AGI"],["acrobacia","Acrobacia","AGI"],
@@ -145,10 +156,39 @@
       const r = (vivo[k] = vivo[k] || { atual: 0, total: 0 });
       const div = el("div");
       div.className = "recurso";
+      if (["pv", "pc", "pe", "pf"].includes(k)) div.classList.add("alerta");
       const barra = el("div"), preenche = el("i");
       barra.className = "barra r-" + k;
       barra.append(preenche);
-      const pintar = () => { preenche.style.width = (r.total > 0 ? Math.max(0, Math.min(100, r.atual / r.total * 100)) : 0) + "%"; };
+
+      // Morrendo: só no PV, quando zera (0 a 3 turnos; no 3 o personagem morre). Volta a 0 quando o PV sobe.
+      const mor = el("div");
+      mor.className = "morrendo";
+      const desenharMor = () => {
+        if (k !== "pv") return;
+        if (!(r.total > 0 && r.atual <= 0)) {
+          mor.replaceChildren();
+          if (vivo.morrendo && !somenteLeitura) { vivo.morrendo = 0; salvarVivo(persId, "morrendo", 0); }
+          return;
+        }
+        const n = vivo.morrendo || 0;
+        const mudar = (d) => {
+          vivo.morrendo = Math.max(0, Math.min(3, n + d));
+          salvarVivo(persId, "morrendo", vivo.morrendo);
+          desenharMor();
+        };
+        mor.replaceChildren(el("strong", n >= 3 ? "MORTO" : "MORRENDO"),
+          botao("-", () => mudar(-1)), el("span", n + "/3"), botao("+", () => mudar(1)));
+      };
+
+      const pintar = () => {
+        const pct = r.total > 0 ? (r.atual / r.total) * 100 : 100;
+        preenche.style.width = (r.total > 0 ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+        div.classList.toggle("meio", r.total > 0 && pct < 50);
+        div.classList.toggle("critico", r.total > 0 && pct <= 25);
+        desenharMor();
+        if (k === "pv") atualizarRetrato();
+      };
       const enviar = (c, v) => { r[c] = v; salvarVivo(persId, k + "." + c, v); pintar(); };
       const atual = entrada("n", r.atual, (v) => enviar("atual", v));
       const mexer = (d) => { const novo = r.atual + d; atual.value = novo; enviar("atual", novo); };
@@ -159,6 +199,7 @@
       controles.append(botao("-", () => mexer(-1)), atual, botao("+", () => mexer(1)), " de ", total);
       if (k === "pv") controles.append(" temp ", entrada("n", r.temp || 0, (v) => enviar("temp", v)));
       div.append(el("strong", nome), barra, controles);
+      if (k === "pv") div.append(mor);
       pintar();
       return div;
     }
@@ -170,6 +211,101 @@
       areaVivo.replaceChildren(areaVivo.querySelector("legend"), ...itens.map(([k, nome]) => recurso(k, nome)));
     }
 
+    // ---------- Imagens: normal e ferido (reduzidas no navegador antes de enviar) ----------
+    function atualizarRetrato() {
+      const img = $("retrato");
+      if (!img) return;
+      const pv = vivo.pv || { atual: 0, total: 0 };
+      const ferido = pv.total > 0 && pv.atual / pv.total < 0.5; // abaixo da metade usa a imagem de ferido
+      const src = (ferido && imagens.ferido) || imagens.normal || imagens.ferido || "";
+      const ok = typeof src === "string" && src.startsWith("data:image/jpeg;base64,");
+      img.hidden = !ok;
+      if (ok) img.src = src;
+    }
+
+    function reduzirImagem(arquivo, lado) {
+      return new Promise((ok, falha) => {
+        const img = new Image();
+        const url = URL.createObjectURL(arquivo);
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          const esc = Math.min(1, lado / Math.max(img.width, img.height));
+          const c = document.createElement("canvas");
+          c.width = Math.round(img.width * esc);
+          c.height = Math.round(img.height * esc);
+          const g = c.getContext("2d");
+          g.fillStyle = "#14141a";
+          g.fillRect(0, 0, c.width, c.height);
+          g.drawImage(img, 0, 0, c.width, c.height);
+          let q = 0.85, saida = c.toDataURL("image/jpeg", q);
+          while (saida.length > 300000 && q > 0.4) { q -= 0.1; saida = c.toDataURL("image/jpeg", q); }
+          if (saida.length > 300000) falha(new Error("Imagem grande demais, mesmo reduzida.")); else ok(saida);
+        };
+        img.onerror = () => falha(new Error("Não foi possível ler a imagem."));
+        img.src = url;
+      });
+    }
+
+    function slotImagem(qual) {
+      const box = el("div");
+      box.className = "linha";
+      const atual = imagens[qual];
+      const tem = typeof atual === "string" && atual.startsWith("data:image/jpeg;base64,");
+      box.append(qual === "normal" ? "Normal: " : "Ferido: ");
+      if (tem) {
+        const mini = el("img");
+        mini.src = atual;
+        mini.alt = "";
+        mini.className = "mini";
+        box.append(mini);
+      }
+      const arq = el("input");
+      arq.type = "file";
+      arq.accept = "image/*";
+      arq.hidden = true;
+      arq.onchange = async () => {
+        if (!arq.files[0]) return;
+        try {
+          $("estado").textContent = "Enviando imagem...";
+          const url = await reduzirImagem(arq.files[0], 480);
+          await salvarImagem(persId, qual, url);
+          imagens[qual] = url;
+          $("estado").textContent = "Imagem salva.";
+          abrir(abaAtual);
+        } catch (e) { $("estado").textContent = "Erro: " + e.message; }
+      };
+      box.append(arq, botao(tem ? "Trocar" : "Enviar", () => arq.click()));
+      if (tem) {
+        box.append(botao("Remover", async () => {
+          try { await removerImagem(persId, qual); delete imagens[qual]; abrir(abaAtual); }
+          catch (e) { $("estado").textContent = "Erro: " + e.message; }
+        }));
+      }
+      return box;
+    }
+
+    // ---------- Formatação: **negrito**, `itálico`, __sublinhado__ (podem ser combinados) ----------
+    const DELIM = ["**", "__", "`"];
+    function formatar(texto) {
+      const partes = String(texto).split(/(\*\*|__|`)/);
+      const contagem = { "**": 0, "__": 0, "`": 0 }, ultimo = {};
+      partes.forEach((p, k) => { if (DELIM.includes(p)) { contagem[p]++; ultimo[p] = k; } });
+      // marcador sem par (o último de cada tipo, se a contagem for ímpar) fica como texto normal
+      const solto = new Set(DELIM.filter((d) => contagem[d] % 2 === 1).map((d) => ultimo[d]));
+      const est = { "**": false, "__": false, "`": false };
+      const frag = document.createDocumentFragment();
+      partes.forEach((p, k) => {
+        if (DELIM.includes(p) && !solto.has(k)) { est[p] = !est[p]; return; }
+        if (!p) return;
+        let no = document.createTextNode(p);
+        if (est["`"]) { const e = el("em"); e.append(no); no = e; }
+        if (est["__"]) { const e = el("u"); e.append(no); no = e; }
+        if (est["**"]) { const e = el("strong"); e.append(no); no = e; }
+        frag.append(no);
+      });
+      return frag;
+    }
+
     // ---------- Técnicas: formulário para criar/editar e card depois de salvar ----------
     const emEdicao = new WeakSet(), copias = new WeakMap();
 
@@ -177,13 +313,31 @@
       ficha.tecnicas = ficha.tecnicas || [];
       const area = el("div");
       area.className = "tecnicas";
+      const medidas = [];
 
       const form = (t, k) => {
         const box = el("div");
         box.className = "card-tec edicao";
-        [["nome","Nome","t"],["rank","Rank","s",RANKS],["elemento","Elemento","s",ELEMENTOS_TEC],["custo","Custo","t"],["dano","Dano","t"],
-         ["origem","Origem","s",["sistema","criada","modificada"]],["descricao","Descrição","a"]]
-          .forEach(([c, r, tp, op]) => campo(box, r, t, c, tp, op));
+        const campos = (lista) => lista.forEach(([c, r, tp, op]) => campo(box, r, t, c, tp, op));
+        // mini botão que alterna o tipo (ex.: Dano/Cura) ao lado do valor
+        const tipoValor = (chaveTipo, chaveValor, [a, b]) => {
+          const l = el("label");
+          const mostra = () => (t[chaveTipo] === b[0] ? b[1] : a[1]);
+          const btn = botao(mostra(), () => {
+            t[chaveTipo] = t[chaveTipo] === b[0] ? a[0] : b[0];
+            btn.textContent = mostra();
+            sujo();
+          });
+          btn.className = "mini-botao";
+          btn.title = "Clique para alternar";
+          l.append(btn, " ", entrada("t", t[chaveValor], (v) => { t[chaveValor] = v; sujo(); }));
+          box.append(l);
+        };
+        campos([["nome","Nome","t"],["rank","Rank","s",RANKS],["elemento","Elemento","s",ELEMENTOS_TEC],["alcance","Alcance","t"]]);
+        tipoValor("custoTipo", "custo", [["custo", "Custo de chakra"], ["absorvido", "Chakra absorvido"]]);
+        tipoValor("danoTipo", "dano", [["dano", "Dano"], ["cura", "Cura"]]);
+        campos([["origem","Origem","s",["sistema","criada","modificada"]],["descricao","Descrição","a"]]);
+        box.append(el("small", "Na descrição: **negrito**, `itálico` e __sublinhado__ (dá para combinar, por exemplo **__assim__**)."));
         const acoes = el("div");
         acoes.className = "acoes";
         acoes.append(
@@ -213,9 +367,26 @@
         elem.className = "elem e-" + (ELEM_CLASSE[t.elemento] || "nenhum");
         sub.append("RANK " + (t.rank || "?") + " - ", elem);
         box.append(sub);
-        const meta = [t.custo && "Custo " + t.custo, t.dano && "Dano " + t.dano, t.origem].filter(Boolean).join(" · ");
+        const custoRot = t.custoTipo === "absorvido" ? "Chakra absorvido" : "Custo de chakra";
+        const danoRot = t.danoTipo === "cura" ? "Cura" : "Dano";
+        const meta = [t.alcance && "Alcance " + t.alcance, t.custo && custoRot + " " + t.custo,
+                      t.dano && danoRot + " " + t.dano, t.origem].filter(Boolean).join(" · ");
         if (meta) box.append(el("small", meta));
-        if (t.descricao) { const d = el("p", t.descricao); d.className = "desc"; box.append(d); }
+        if (t.descricao) {
+          const d = el("div");
+          d.className = "desc recolhida";
+          d.append(formatar(t.descricao));
+          const ler = el("button", "… LER MAIS");
+          ler.type = "button";
+          ler.className = "ler";
+          ler.hidden = true;
+          ler.onclick = () => {
+            const recolhida = d.classList.toggle("recolhida");
+            ler.textContent = recolhida ? "… LER MAIS" : "LER MENOS";
+          };
+          box.append(d, ler);
+          medidas.push(() => { ler.hidden = d.classList.contains("recolhida") ? !(d.scrollHeight > d.clientHeight + 1) : false; });
+        }
         const acoes = el("div");
         acoes.className = "acoes";
         acoes.append(
@@ -235,9 +406,13 @@
         return box;
       };
 
-      const desenhar = () => area.replaceChildren(...ficha.tecnicas.map((t, k) => (emEdicao.has(t) ? form(t, k) : card(t, k))));
+      const desenhar = () => {
+        medidas.length = 0;
+        area.replaceChildren(...ficha.tecnicas.map((t, k) => (emEdicao.has(t) ? form(t, k) : card(t, k))));
+        requestAnimationFrame(() => medidas.forEach((m) => m()));
+      };
       pai.append(area, botao("Adicionar técnica", () => {
-        const t = { nome: "", rank: "E", elemento: "Nenhum", custo: "", dano: "", origem: "criada", descricao: "" };
+        const t = { nome: "", rank: "E", elemento: "Nenhum", alcance: "", custoTipo: "custo", custo: "", danoTipo: "dano", dano: "", origem: "criada", descricao: "" };
         ficha.tecnicas.push(t);
         copias.set(t, null);
         emEdicao.add(t);
@@ -278,13 +453,24 @@
         campo(s, "Vilarejo", ap, "vilarejo", "t");
         campo(s, "Idade", ap, "idade", "n");
         campo(s, "Sexo", ap, "sexo", "t");
+
+        s = secao("Imagem", dir);
+        const retrato = el("img");
+        retrato.id = "retrato";
+        retrato.className = "retrato";
+        retrato.alt = "";
+        s.append(retrato);
+        atualizarRetrato();
+        if (!somenteLeitura) s.append(slotImagem("normal"), slotImagem("ferido"));
       },
 
       tecnicas() {
         let s = secao("Ataques");
         ficha.ataques = ficha.ataques || [];
-        lista(s, ficha.ataques, ["arma","tipo","alcance","dano","critico","especial"].map((k) => [k, k[0].toUpperCase() + k.slice(1), "t"]),
-              () => ({ arma: "", tipo: "", alcance: "", dano: "", critico: "", especial: "" }), "Adicionar ataque");
+        lista(s, ficha.ataques,
+              [["arma","Arma"],["tipo","Tipo"],["alcance","Alcance"],["dado","Dado (ex.: 3d20)"],["dano","Dano"],["critico","Crítico"],["especial","Especial"]]
+                .map(([k, r]) => [k, r, "t"]),
+              () => ({ arma: "", tipo: "", alcance: "", dado: "", dano: "", critico: "", especial: "" }), "Adicionar ataque");
         s = secao("Técnicas");
         tecnicasUI(s);
       },
@@ -345,7 +531,7 @@
           .forEach(([r, k]) => campo(s, r, sub(ficha, "textos"), k, "a"));
       },
 
-      perigo() {
+      ferramentas() {
         let s = secao("Campanha");
         const aviso = el("p"), area = el("div");
         s.append(aviso, area);
@@ -372,7 +558,69 @@
         };
         desenhar();
 
-        s = secao("Apagar personagem");
+        s = secao("Código do personagem");
+        s.append(el("p", "Quem tiver este código vê a ficha inteira, incluindo textos e anotações, só para leitura. " +
+                         "A pessoa digita o código na tela inicial (precisa ter conta)."));
+        const area2 = el("div");
+        s.append(area2);
+        const erro = (e) => { $("estado").textContent = "Erro: " + e.message; };
+        const desenhar2 = () => {
+          if (codigoVer) {
+            const cod = el("strong", codigoVer);
+            cod.className = "codigo";
+            area2.replaceChildren(cod, " ",
+              botao("Copiar", async () => {
+                try { await navigator.clipboard.writeText(codigoVer); $("estado").textContent = "Código copiado."; }
+                catch (e) { $("estado").textContent = "Copie à mão: " + codigoVer; }
+              }),
+              botao("Gerar novo código", async () => {
+                try { codigoVer = await gerarCodigoFicha(persId, codigoVer); desenhar2(); } catch (e) { erro(e); }
+              }),
+              botao("Desativar", async () => {
+                if (!confirm("Desativar o código? Ninguém mais abrirá esta ficha por ele.")) return;
+                try { await desativarCodigoFicha(persId, codigoVer); codigoVer = null; desenhar2(); } catch (e) { erro(e); }
+              }));
+          } else {
+            area2.replaceChildren(botao("Gerar código", async () => {
+              try { codigoVer = await gerarCodigoFicha(persId, null); desenhar2(); } catch (e) { erro(e); }
+            }));
+          }
+        };
+        desenhar2();
+
+        s = secao("Arena");
+        const avisoA = el("p"), areaA = el("div");
+        s.append(avisoA, areaA);
+        const desenharA = () => {
+          if (arenaId) {
+            avisoA.textContent = "Este personagem está na arena " + arenaNome + ".";
+            const ver = el("a", "Abrir arena");
+            ver.href = "arena.html?id=" + arenaId;
+            areaA.replaceChildren(ver, " ", botao("Sair da arena", async () => {
+              try { await sairArena(persId, arenaId); arenaId = null; arenaNome = ""; desenharA(); }
+              catch (e) { $("estado").textContent = "Erro: " + e.message; }
+            }));
+          } else {
+            avisoA.textContent = "Este personagem não está em nenhuma arena. Cada personagem só pode estar em uma.";
+            const cod = el("input");
+            cod.placeholder = "Código da arena";
+            areaA.replaceChildren(cod, " ", botao("Entrar", async () => {
+              try {
+                const r = await entrarArena(persId, cod.value, vivo);
+                arenaId = r.arenaId;
+                arenaNome = r.nome;
+                vivo.arenaId = r.arenaId;
+                vivo.arenaExpira = r.exp;
+                desenharA();
+              } catch (e) { $("estado").textContent = "Erro: " + e.message; }
+            }));
+          }
+        };
+        desenharA();
+      },
+
+      perigo() {
+        const s = secao("Apagar personagem");
         s.append(el("p", "Apagar o personagem é permanente. Digite o nome exato do personagem para liberar o botão."));
         const conf = el("input");
         conf.placeholder = nomeSalvo;
@@ -403,12 +651,12 @@
     function montarMenu() {
       const itens = [["inicio","Início"],["tecnicas","Técnicas"],["pericias","Perícias"],
                      ["elementos","Elementos"],["equipamentos","Equipamentos"],["textos","Textos"]];
-      if (!somenteLeitura) itens.push(["perigo","💀"]);
+      if (!somenteLeitura) itens.push(["ferramentas","🛠️"], ["perigo","💀"]);
       $("menu").replaceChildren(...itens.map(([k, nome]) => {
         const b = el("button", nome);
         b.dataset.aba = k;
         b.onclick = () => abrir(k);
-        if (k === "perigo") { b.className = "fim"; b.title = "Zona de perigo"; }
+        if (k === "perigo" || k === "ferramentas") { b.className = "fim"; b.title = k === "perigo" ? "Zona de perigo" : "Ferramentas"; }
         return b;
       }));
     }
@@ -424,6 +672,7 @@
         else if (!pfExiste) vivo.pf = { atual: pfTotal, total: pfTotal };
         else vivo.pf.total = pfTotal;
         renderVivo();
+        if (arenaId) espelharArena(persId, vivo);
         naoSalvo = false;
         nomeSalvo = topo.nome;
         $("titulo").textContent = nomeSalvo;
@@ -453,18 +702,42 @@
         if (!p) throw new Error("Personagem não encontrado.");
         somenteLeitura = p.donoUid !== user.uid;
         nomeSalvo = p.nome;
+        codigoVer = p.codigoVer || null;
+        arenaId = p.arenaId || null;
+        arenaNome = p.arenaNome || "";
+        if (arenaId && p.arenaExpira && p.arenaExpira <= Date.now() && !somenteLeitura) {
+          sairArena(persId, arenaId).catch(() => {}); // a arena terminou: solta o personagem
+          arenaId = null;
+        }
         campId = p.campanhaId || null;
         await mostrarCampanha();
         ficha = p.ficha || {};
         topo = { nome: p.nome, jogador: p.jogador || "", cla: p.cla || "", trilha: p.trilha || "",
                  patente: p.patente || "", nivel: NIVEIS.includes(p.nivel) ? p.nivel : 5 };
         vivo = await getVivo(persId);
+        try { imagens = await getImagens(persId); } catch (e) { imagens = {}; }
+        viaCodigo = somenteLeitura && p.mestreUid !== user.uid && !(await souAdmin());
+        versaoCompart = vivo.compartVersao || 0;
+        definirArena(persId, somenteLeitura ? null : arenaId);
         $("titulo").textContent = p.nome + (somenteLeitura ? " (somente leitura)" : "");
         $("btnSalvar").hidden = somenteLeitura;
         montarMenu();
         const inicial = location.hash.slice(1);
-        abrir(ABAS[inicial] && (inicial !== "perigo" || !somenteLeitura) ? inicial : "inicio");
-        if (somenteLeitura) escutarVivo(persId, (d) => { vivo = d; renderVivo(); });
+        abrir(ABAS[inicial] && (!["perigo", "ferramentas"].includes(inicial) || !somenteLeitura) ? inicial : "inicio");
+        // Quem vê pelo código é desconectado na hora se o dono desativar ou trocar o código
+        const encerrado = () => {
+          if (encerrando) return;
+          encerrando = true;
+          alert("O acesso a esta ficha foi encerrado.");
+          location.href = "inicio.html";
+        };
+        if (somenteLeitura) {
+          escutarVivo(persId, (d) => {
+            if (viaCodigo && (d.compartilhado === false || (d.compartVersao || 0) !== versaoCompart)) { encerrado(); return; }
+            vivo = d;
+            renderVivo();
+          }, encerrado);
+        }
       } catch (e) {
         $("estado").textContent = "Erro: " + e.message;
       }
