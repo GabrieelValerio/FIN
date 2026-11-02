@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Início - Fin</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon.png?v=2">
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <main class="pagina">
+    <header class="conta"><span>Olá, <strong id="nomeUser"></strong></span> <a id="linkAdmin" href="admin.html" hidden>Administração</a> <button id="btnAtualizacoes">Atualizações</button> <button id="btnNome">Alterar nome</button> <button id="btnSair">Sair</button></header>
+
+    <h2>Minhas campanhas</h2>
+    <input id="nomeCampanha" placeholder="Nome da campanha">
+    <button id="btnCriarCampanha" class="principal">Criar campanha</button>
+    <ul id="listaCampanhas"></ul>
+
+    <h2>Meus personagens</h2>
+    <input id="nomePersonagem" placeholder="Nome do personagem">
+    <button id="btnCriarPersonagem" class="principal">Criar personagem</button>
+    <ul id="listaPersonagens"></ul>
+
+    <h2>Ver ficha por código</h2>
+    <input id="codigoFicha" placeholder="Código do personagem">
+    <button id="btnVerFicha">Abrir (somente leitura)</button>
+
+    <h2>Arenas</h2>
+    <input id="nomeArena" placeholder="Nome da arena">
+    <button id="btnCriarArena" class="principal">Criar arena</button>
+    <p><small>Cada arena dura no máximo 3 horas e depois se apaga. Quem tiver o código entra pela aba Ferramentas da ficha.</small></p>
+    <ul id="listaArenas"></ul>
+
+    <p id="msg"></p>
+  </main>
+
+  <div id="sobreposicao" class="sobreposicao" hidden>
+    <div class="caixa">
+      <h2 id="caixaTitulo"></h2>
+      <div id="caixaCorpo"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { sair, aoMudarLogin, criarCampanha, criarPersonagem, meusPersonagens, minhasCampanhas,
+             apagarCampanha, sincronizarDono, mudarNomeUsuario, registrarUsuario, souAdmin,
+             buscarFichaPorCodigo, TERMOS_VERSAO, perfilUsuario, aceitarTermos, ultimasAtualizacoes,
+             marcarAtualizacaoVista, minhasArenas, criarArena, encerrarArena, sairArena } from "./db.js";
+
+    const $ = (id) => document.getElementById(id);
+    const msg = (t) => { $("msg").textContent = t; };
+
+    function link(texto, destino) {
+      const a = document.createElement("a");
+      a.textContent = texto;
+      a.href = destino;
+      return a;
+    }
+    function botao(texto, fn, classe) {
+      const b = document.createElement("button");
+      b.textContent = texto;
+      b.onclick = fn;
+      if (classe) b.className = classe;
+      return b;
+    }
+    async function tentar(fn) {
+      try { msg(""); await fn(); }
+      catch (e) { msg("Erro: " + e.message); }
+    }
+
+    async function atualizar() {
+      const campanhas = await minhasCampanhas();
+      $("listaCampanhas").replaceChildren(...campanhas.map((c) => {
+        const li = document.createElement("li");
+        li.append(c.nome + " - código: " + c.codigo + " ", link("Abrir painel ao vivo", "campanha.html?id=" + c.id), " ",
+                  botao("Apagar", () => tentar(async () => {
+                    const digitado = prompt("Isso apaga a campanha e desvincula os personagens dela.\nPara confirmar, digite o nome da campanha:\n" + c.nome);
+                    if (digitado === null) return;
+                    if (digitado.trim() !== c.nome) throw new Error("O nome não confere. Nada foi apagado.");
+                    await apagarCampanha(c.id, c.codigo);
+                    await atualizar();
+                  }), "perigo"));
+        return li;
+      }));
+
+      const personagens = await meusPersonagens();
+      $("listaPersonagens").replaceChildren(...personagens.map((p) => {
+        const li = document.createElement("li");
+        li.append(p.nome + " ", link("Abrir ficha", "personagem.html?id=" + p.id), " " + (p.campanhaId ? "(em campanha)" : "(sem campanha)"));
+        return li;
+      }));
+      sincronizarDono(personagens).catch(() => {});
+      atualizarArenas(personagens).catch(() => {});
+    }
+
+    // ---------- Janela de aviso: termos de uso e atualizações ----------
+    const no = (tag, texto) => { const e = document.createElement(tag); if (texto !== undefined) e.textContent = texto; return e; };
+
+    function abrirCaixa(titulo, montar) {
+      return new Promise((ok) => {
+        $("caixaTitulo").textContent = titulo;
+        const corpo = $("caixaCorpo");
+        corpo.replaceChildren();
+        montar(corpo, () => { $("sobreposicao").hidden = true; ok(); });
+        $("sobreposicao").hidden = false;
+      });
+    }
+
+    // Texto simples e provisório: troque pelo que fizer sentido para a sua mesa
+    const TERMOS = [
+      "O Fin é um sistema de fichas para mesas de RPG entre amigos, sem fins comerciais.",
+      "Guardamos seu nome de usuário, e-mail, campanhas, fichas e as imagens que você enviar.",
+      "O mestre da campanha em que seu personagem estiver vê a ficha inteira. Quem tiver o código do personagem também.",
+      "Não envie conteúdo ilegal, ofensivo ou que você não tenha direito de usar.",
+      "O administrador pode remover conteúdo ou contas que quebrem estas regras.",
+      "É um projeto de hobby: pode mudar, ficar fora do ar ou perder dados. Guarde uma cópia do que for importante.",
+      "Para apagar sua conta e seus dados, fale com o administrador."
+    ];
+
+    // Guarda o aceite também neste aparelho, para não perguntar de novo mesmo se o servidor falhar
+    let uidAtual = null;
+    const chaveTermos = () => "termosAceitos_" + uidAtual;
+    const aceitoAqui = () => localStorage.getItem(chaveTermos()) === String(TERMOS_VERSAO);
+
+    function pedirTermos() {
+      return abrirCaixa("Termos de uso", (corpo, fechar) => {
+        const ul = no("ul");
+        TERMOS.forEach((t) => ul.append(no("li", t)));
+        const rotulo = no("label");
+        const cb = no("input");
+        cb.type = "checkbox";
+        rotulo.append(cb, " Li e aceito os termos de uso");
+        const aviso = no("p");
+        const aceitar = botao("Aceitar e continuar", async () => {
+          localStorage.setItem(chaveTermos(), String(TERMOS_VERSAO));
+          try { await aceitarTermos(); }
+          catch (e) { console.warn("Aceite não gravado no servidor:", e.message); } // tenta de novo na próxima entrada
+          fechar();
+        }, "principal");
+        aceitar.disabled = true;
+        cb.onchange = () => { aceitar.disabled = !cb.checked; };
+        corpo.append(ul, no("p"), rotulo, aviso, aceitar, " ", botao("Sair", () => tentar(sair)));
+      });
+    }
+
+    async function mostrarAtualizacoes(lista, marcarId) {
+      await abrirCaixa("Atualizações", (corpo, fechar) => {
+        lista.forEach((a) => {
+          const data = a.criadoEm && a.criadoEm.toDate ? " - " + a.criadoEm.toDate().toLocaleDateString("pt-BR") : "";
+          const bloco = no("div");
+          const texto = no("p", a.texto);
+          texto.className = "texto-pre";
+          bloco.append(no("h3", a.titulo + data), texto);
+          corpo.append(bloco);
+        });
+        corpo.append(botao("Entendi", fechar, "principal"));
+      });
+      if (marcarId) marcarAtualizacaoVista(marcarId).catch(() => {});
+    }
+
+    async function verificarEntrada() {
+      const p = await perfilUsuario();
+      const novo = p.termosVersao === undefined && !aceitoAqui();
+      if (!(Number(p.termosVersao) >= TERMOS_VERSAO)) { // aceita 1 mesmo gravado como texto
+        if (aceitoAqui()) aceitarTermos().catch(() => {}); // já aceitou neste aparelho: só regrava no servidor
+        else await pedirTermos();
+      }
+      const [ultima] = await ultimasAtualizacoes(1);
+      if (!ultima || p.atualizacaoVista === ultima.id) return;
+      if (novo) marcarAtualizacaoVista(ultima.id).catch(() => {}); // conta nova não precisa ver avisos antigos
+      else await mostrarAtualizacoes([ultima], ultima.id);
+    }
+
+    $("btnAtualizacoes").onclick = () => tentar(async () => {
+      const lista = await ultimasAtualizacoes(10);
+      if (!lista.length) { msg("Nenhuma atualização ainda."); return; }
+      await mostrarAtualizacoes(lista, lista[0].id);
+    });
+
+    // ---------- Arenas ----------
+    const hora = (ms) => new Date(ms).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+
+    async function atualizarArenas(personagens) {
+      const agora = Date.now();
+      const minhas = await minhasArenas();
+      const vivas = [];
+      minhas.forEach((a) => {
+        if (a.expiraEm.toMillis() <= agora) encerrarArena(a.id, a.codigo).catch(() => {}); // passou de 3 horas: apaga
+        else vivas.push(a);
+      });
+      const itens = vivas.map((a) => {
+        const li = document.createElement("li");
+        li.append(a.nome + " - código: " + a.codigo + " - até " + hora(a.expiraEm.toMillis()) + " ",
+          link("Abrir", "arena.html?id=" + a.id), " ",
+          botao("Encerrar", () => tentar(async () => {
+            if (!confirm("Encerrar a arena " + a.nome + " agora?")) return;
+            await encerrarArena(a.id, a.codigo);
+            await atualizar();
+          }), "perigo"));
+        return li;
+      });
+      const meus = new Set(vivas.map((a) => a.id)), vistas = new Set();
+      personagens.forEach((p) => {
+        if (!p.arenaId) return;
+        if (p.arenaExpira && p.arenaExpira <= agora) { sairArena(p.id, p.arenaId).catch(() => {}); return; }
+        if (meus.has(p.arenaId) || vistas.has(p.arenaId)) return;
+        vistas.add(p.arenaId);
+        const li = document.createElement("li");
+        li.append((p.arenaNome || "Arena") + " (com " + p.nome + ") ", link("Abrir", "arena.html?id=" + p.arenaId));
+        itens.push(li);
+      });
+      $("listaArenas").replaceChildren(...itens);
+    }
+
+    $("btnCriarArena").onclick = () => tentar(async () => {
+      const codigo = await criarArena($("nomeArena").value);
+      $("nomeArena").value = "";
+      msg("Arena criada. Código: " + codigo);
+      await atualizar();
+    });
+
+    $("btnSair").onclick = () => tentar(sair);
+    $("btnVerFicha").onclick = () => tentar(async () => {
+      const id = await buscarFichaPorCodigo($("codigoFicha").value);
+      location.href = "personagem.html?id=" + id;
+    });
+    $("btnNome").onclick = () => tentar(async () => {
+      const nome = prompt("Novo nome de usuário:", $("nomeUser").textContent);
+      if (nome === null) return;
+      await mudarNomeUsuario(nome);
+      $("nomeUser").textContent = nome.trim();
+      registrarUsuario().catch(() => {});
+      await atualizar(); // atualiza o nome também nos personagens
+    });
+    $("btnCriarCampanha").onclick = () => tentar(async () => {
+      await criarCampanha($("nomeCampanha").value);
+      $("nomeCampanha").value = "";
+      await atualizar();
+    });
+    $("btnCriarPersonagem").onclick = () => tentar(async () => {
+      await criarPersonagem($("nomePersonagem").value);
+      $("nomePersonagem").value = "";
+      await atualizar();
+    });
+
+    aoMudarLogin((user) => {
+      if (!user) { location.href = "login.html"; return; }
+      uidAtual = user.uid;
+      $("nomeUser").textContent = user.displayName || user.email;
+      tentar(atualizar);
+      souAdmin().then((ok) => { $("linkAdmin").hidden = !ok; });
+      if (!sessionStorage.getItem("entradaOk")) {
+        verificarEntrada().then(() => sessionStorage.setItem("entradaOk", "1")).catch(() => {});
+      }
+      if (!sessionStorage.getItem("perfilOk")) {
+        registrarUsuario().then(() => sessionStorage.setItem("perfilOk", "1")).catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>
