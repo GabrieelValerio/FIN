@@ -50,7 +50,7 @@ Isso permite que você:
 
 Em breve, disponibilizarei um guia de instalação com todas as etapas necessárias para configurar o projeto e colocá-lo no ar.
 
-📖 **[Acessar o guia de instalação]**
+📖 **[Acessar o guia de instalação]** - Não Disponível no Momento
 
 ## 💡 Filosofia do projeto
 
