@@ -54,6 +54,7 @@
     const ELEM_CLASSE = { "Fogo": "fogo", "Vento": "vento", "Relâmpago": "relampago", "Terra": "terra", "Água": "agua",
                           "Kekkei Genkai": "kg", "Yin/Yang": "yinyang", "Nenhum": "nenhum" };
     const RANKS = ["E", "D", "C", "B", "A", "S"];
+    const ACOES = ["—", "Livre", "Padrão", "Movimento", "Reação", "Completa"]; // "—" = não definido
     const NIVEIS = Array.from({ length: 20 }, (_, k) => (k + 1) * 5); // 5, 10, ... 100
     // Tabela: 5-20 = +2, 25-40 = +3, 45-60 = +4, 65-80 = +5, 85-100 = +6
     const profPorNivel = (n) => 2 + Math.floor(((n || 5) - 5) / 20);
@@ -360,7 +361,8 @@
           l.append(btn, " ", entrada("t", t[chaveValor], (v) => { t[chaveValor] = v; sujo(); }));
           box.append(l);
         };
-        campos([["nome","Nome","t"],["rank","Rank","s",RANKS],["elemento","Elemento","s",ELEMENTOS_TEC],["alcance","Alcance","t"]]);
+        campos([["nome","Nome","t"],["rank","Rank","s",RANKS],["elemento","Elemento","s",ELEMENTOS_TEC],
+                ["acao","Tipo de ação","s",ACOES],["alcance","Alcance","t"],["alvos","Alvos","t"],["duracao","Duração","t"]]);
         tipoValor("custoTipo", "custo", [["custo", "Custo de chakra"], ["absorvido", "Chakra absorvido"]]);
         tipoValor("danoTipo", "dano", [["dano", "Dano"], ["cura", "Cura"]]);
         campos([["origem","Origem","s",["sistema","criada","modificada"]],["descricao","Descrição","a"]]);
@@ -397,8 +399,10 @@
         box.append(sub);
         const custoRot = t.custoTipo === "absorvido" ? "Chakra absorvido" : "Custo de chakra";
         const danoRot = t.danoTipo === "cura" ? "Cura" : "Dano";
-        const meta = [t.alcance && "Alcance " + t.alcance, t.custo && custoRot + " " + t.custo,
-                      t.dano && danoRot + " " + t.dano, t.origem].filter(Boolean).join(" · ");
+        const meta = [t.acao && t.acao !== "—" && "Ação " + t.acao, t.alcance && "Alcance " + t.alcance,
+                      t.alvos && "Alvos " + t.alvos, t.duracao && "Duração " + t.duracao,
+                      t.custo && custoRot + " " + t.custo, t.dano && danoRot + " " + t.dano, t.origem]
+          .filter(Boolean).join(" · ");
         if (meta) box.append(el("small", meta));
         if (t.descricao) {
           const d = el("div");
@@ -441,7 +445,7 @@
         requestAnimationFrame(() => medidas.forEach((m) => m()));
       };
       pai.append(area, botao("Adicionar técnica", () => {
-        const t = { nome: "", rank: "E", elemento: "Nenhum", alcance: "", custoTipo: "custo", custo: "", danoTipo: "dano", dano: "", origem: "criada", descricao: "" };
+        const t = { nome: "", rank: "E", elemento: "Nenhum", acao: "—", alcance: "", alvos: "", duracao: "", custoTipo: "custo", custo: "", danoTipo: "dano", dano: "", origem: "criada", descricao: "" };
         ficha.tecnicas.push(t);
         copias.set(t, null);
         emEdicao.add(t);
