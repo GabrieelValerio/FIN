@@ -1,4 +1,4 @@
-# FIN — Gerenciador Interativo de Fichas e Campanhas
+# FIN - Gerenciador Interativo de Fichas e Campanhas
 
 Uma plataforma gratuita para criação, gerenciamento e organização de fichas de personagens e campanhas de RPG.
 
@@ -76,4 +76,4 @@ Novas funcionalidades, melhorias e correções são desenvolvidas gradualmente, 
 
 Sugestões e ideias são bem-vindas!
 
-**FIN — Suas campanhas, suas histórias, suas regras.**
+**FIN - Suas campanhas, suas histórias, suas regras.**
