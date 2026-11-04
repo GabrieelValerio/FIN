@@ -25,7 +25,7 @@
     import { aoMudarLogin, getPersonagem, getCampanha, getVivo, escutarVivo, salvarVivo, enviarVivo,
              salvarFicha, apagarPersonagem, vincularPersonagem, desvincularPersonagem,
              getImagens, salvarImagem, removerImagem, gerarCodigoFicha, desativarCodigoFicha, souAdmin,
-             entrarArena, sairArena, definirArena, espelharArena } from "./db.js";
+             entrarArena, sairArena, definirArena, espelharArena, escutarInvocacoesDoPersonagem } from "./db.js";
 
     const $ = (id) => document.getElementById(id);
     const el = (tag, texto) => { const e = document.createElement(tag); if (texto) e.textContent = texto; return e; };
@@ -38,7 +38,7 @@
       $("voltar").href = "admin.html";
       $("voltar").textContent = "← Administração";
     }
-    let vivo, ficha, topo, somenteLeitura, areaVivo, nomeSalvo, abaAtual, campId, codigoVer, arenaId, arenaNome, viaCodigo, versaoCompart, encerrando = false, imagens = {}, naoSalvo = false;
+    let vivo, ficha, topo, somenteLeitura, areaVivo, areaInv, invocs = [], papelInv = null, nomeSalvo, abaAtual, campId, codigoVer, arenaId, arenaNome, viaCodigo, versaoCompart, encerrando = false, imagens = {}, naoSalvo = false;
 
     const PERICIAS = [
       ["atletismo","Atletismo","FOR"],["furtividade","Furtividade","AGI"],["acrobacia","Acrobacia","AGI"],
@@ -212,6 +212,37 @@
       if (k === "pv") div.append(mor);
       pintar();
       return div;
+    }
+
+    // ---------- Invocações vinculadas a este personagem (pontos ao vivo) ----------
+    function renderInvocacoes() {
+      if (!areaInv || !areaInv.isConnected) return;
+      areaInv.hidden = !invocs.length;
+      const barra = (nome, r, cor) => {
+        const d = el("div");
+        d.className = "recurso";
+        const pct = r.total > 0 ? (r.atual / r.total) * 100 : 100;
+        if (r.total > 0 && pct < 50) d.classList.add("meio");
+        if (r.total > 0 && pct <= 25) d.classList.add("critico", "alerta");
+        const b = el("div"), i = el("i");
+        b.className = "barra r-" + cor;
+        i.style.width = (r.total > 0 ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+        b.append(i);
+        d.append(el("span", nome + " " + r.atual + "/" + r.total), b);
+        return d;
+      };
+      invocs.sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+      areaInv.replaceChildren(areaInv.querySelector("legend"), ...invocs.map((p) => {
+        const c = el("div");
+        c.className = "card";
+        c.append(el("h3", p.nome), barra("PV", p.pv, "pv"), barra("PE", p.pe, "pe"), barra("PC", p.pc, "pc"));
+        if (papelInv === "mestre" || p.controle) {
+          const a = el("a", "Abrir ficha");
+          a.href = "invocacao.html?id=" + p.id + "&de=personagem:" + persId;
+          c.append(a);
+        }
+        return c;
+      }));
     }
 
     function renderVivo() {
@@ -468,6 +499,8 @@
           .forEach(([r, k]) => campo(s, r, sub(ficha, "atributos"), k, "n"));
         areaVivo = secao("Pontos", esq);
         renderVivo();
+        areaInv = secao("Invocações", esq);
+        renderInvocacoes();
         s = secao("Valores", esq, "tiles");
         const tile = el("label");
         const saida = el("output");
@@ -476,6 +509,7 @@
         s.append(tile);
         [["Defesa","defesa"],["Esquiva","esquiva"],["Bloqueio","bloqueio"]]
           .forEach(([r, k]) => campo(s, r, sub(ficha, "valores"), k, "n"));
+        campo(s, "Deslocamento", sub(ficha, "valores"), "deslocamento", "t");
         atualizarProf();
 
         s = secao("Identificação", dir);
@@ -768,6 +802,8 @@
         viaCodigo = somenteLeitura && p.mestreUid !== user.uid && !(await souAdmin());
         versaoCompart = vivo.compartVersao || 0;
         definirArena(persId, somenteLeitura ? null : arenaId);
+        papelInv = !somenteLeitura ? "jogador" : (p.mestreUid === user.uid ? "mestre" : null);
+        if (papelInv) escutarInvocacoesDoPersonagem(persId, papelInv, (lista) => { invocs = lista; renderInvocacoes(); }, () => {});
         $("titulo").textContent = p.nome + (somenteLeitura ? " (somente leitura)" : "");
         $("btnSalvar").hidden = somenteLeitura;
         montarMenu();

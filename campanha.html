@@ -16,10 +16,18 @@
     <div class="abas">
       <button id="abaSessao" class="ativo">Em sessão</button>
       <button id="abaTodos">Todos</button>
+      <button id="abaInv">Invocações</button>
     </div>
     <p id="msg"></p>
 
     <div id="cards"></div>
+
+    <div id="invs" hidden>
+      <input id="nomeInv" placeholder="Nome da invocação">
+      <button id="btnCriarInv" class="principal">Criar invocação</button>
+      <p><small>Criaturas da campanha. Você pode vincular cada uma a um jogador, com ou sem o controle da ficha.</small></p>
+      <div id="cardsInv"></div>
+    </div>
 
     <div id="todos" hidden>
       <button id="btnAtualizar">Atualizar lista</button>
@@ -28,7 +36,8 @@
   </main>
 
   <script type="module">
-    import { aoMudarLogin, getCampanha, listarCampanha, setSessao, escutarVivo, renomearCampanha, desvincularPersonagem } from "./db.js";
+    import { aoMudarLogin, getCampanha, listarCampanha, setSessao, escutarVivo, renomearCampanha, desvincularPersonagem,
+             escutarInvocacoesCampanha, criarInvocacao, apagarInvocacao } from "./db.js";
 
     const LIMITE_PV = 0.3; // card fica vermelho quando PV atual <= 30% do total
     const $ = (id) => document.getElementById(id);
@@ -133,15 +142,50 @@
       if (!todos.length) $("listaTodos").replaceChildren(el("li", "Nenhum personagem vinculado ainda. Passe o código de convite aos jogadores."));
     }
 
+    // ----- Invocações (criaturas): escuta só enquanto a aba foi aberta -----
+    let pararInv = null;
+    function cardInv(p) {
+      const div = el("div");
+      div.className = "card";
+      if (p.pv && p.pv.total > 0 && p.pv.atual / p.pv.total <= LIMITE_PV) div.classList.add("baixo");
+      div.append(el("h3", p.nome));
+      div.append(el("small", p.personagemId ? "Invocador: " + p.personagemNome + (p.controle ? " (dono controla a ficha)" : " (dono só vê os pontos)") : "Sem invocador"));
+      div.append(linha("PV", p.pv, true, "pv"), linha("PE", p.pe, false, "pe"), linha("PC", p.pc, false, "pc"));
+      const a = el("a", "Abrir ficha");
+      a.href = "invocacao.html?id=" + p.id + "&de=campanha:" + id;
+      const apagar = el("button", "Apagar");
+      apagar.className = "perigo";
+      apagar.onclick = async () => {
+        if (!confirm("Apagar a invocação " + p.nome + "?")) return;
+        try { await apagarInvocacao(p.id); } catch (e) { erro(e); }
+      };
+      div.append(a, " ", apagar);
+      return div;
+    }
+    function desenharInv(lista) {
+      lista.sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+      $("cardsInv").replaceChildren(...lista.map(cardInv));
+    }
+    $("btnCriarInv").onclick = async () => {
+      try {
+        const novo = await criarInvocacao(id, $("nomeInv").value);
+        location.href = "invocacao.html?id=" + novo + "&de=campanha:" + id;
+      } catch (e) { erro(e); }
+    };
+
     function aba(qual) {
       $("cards").hidden = qual !== "sessao";
       $("todos").hidden = qual !== "todos";
+      $("invs").hidden = qual !== "inv";
       $("abaSessao").classList.toggle("ativo", qual === "sessao");
       $("abaTodos").classList.toggle("ativo", qual === "todos");
+      $("abaInv").classList.toggle("ativo", qual === "inv");
       if (qual === "todos") carregarTodos().catch(erro);
+      if (qual === "inv" && !pararInv) pararInv = escutarInvocacoesCampanha(id, desenharInv, erro);
     }
     $("abaSessao").onclick = () => aba("sessao");
     $("abaTodos").onclick = () => aba("todos");
+    $("abaInv").onclick = () => aba("inv");
     $("btnAtualizar").onclick = () => carregarTodos().catch(erro);
 
     aoMudarLogin(async (user) => {

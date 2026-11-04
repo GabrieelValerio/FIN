@@ -207,6 +207,10 @@ export async function apagarCampanha(campId, codigo) {
     batch.update(doc(db, "personagens", id), { campanhaId: null, mestreUid: null });
     batch.update(doc(db, "vivo", id), { campanhaId: null, mestreUid: null });
   });
+  // as invocações (criaturas) da campanha também são apagadas
+  const invs = await getDocs(query(collection(db, "invocacoes"),
+    where("mestreUid", "==", auth.currentUser.uid), where("campanhaId", "==", campId)));
+  invs.docs.forEach((d) => { batch.delete(d.ref); batch.delete(doc(db, "invVivo", d.id)); });
   batch.delete(doc(db, "convites", codigo));
   batch.delete(doc(db, "campanhas", campId));
   await batch.commit();
@@ -218,7 +222,7 @@ export async function listarCampanha(campId) {
   const q = query(collection(db, "vivo"),
     where("mestreUid", "==", auth.currentUser.uid),
     where("campanhaId", "==", campId));
-  return (await getDocs(q)).docs.map((d) => ({ id: d.id, nome: d.data().nome, donoNome: d.data().donoNome || "" }));
+  return (await getDocs(q)).docs.map((d) => ({ id: d.id, nome: d.data().nome, donoNome: d.data().donoNome || "", donoUid: d.data().donoUid }));
 }
 
 export const setSessao = (campId, ids) => updateDoc(doc(db, "campanhas", campId), { sessao: ids });
@@ -470,3 +474,82 @@ export async function limparMinhaPresenca(arenaId) {
 export const escutarArena = (arenaId, fn, aoErro) =>
   onSnapshot(collection(db, "arenas", arenaId, "membros"),
     (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), aoErro);
+
+// ---------- Invocações (criaturas da campanha) ----------
+// invocacoes/{id}: ficha completa (só o mestre e quem tem o controle) | invVivo/{id}: pontos (o jogador vinculado também vê)
+const pendInv = {}, timersInv = {};
+
+export function salvarPontosInv(invId, campo, valor) {
+  pendInv[invId] = pendInv[invId] || {};
+  pendInv[invId][campo] = valor;
+  clearTimeout(timersInv[invId]);
+  timersInv[invId] = setTimeout(() => enviarPontosInv(invId), 1500);
+}
+
+export async function enviarPontosInv(invId) {
+  const dados = pendInv[invId];
+  if (!dados) return;
+  delete pendInv[invId];
+  await updateDoc(doc(db, "invVivo", invId), { ...dados, atualizadoEm: serverTimestamp() });
+}
+
+export async function criarInvocacao(campanhaId, nome) {
+  nome = nome.trim();
+  if (!nome) throw new Error("Digite o nome da invocação.");
+  const ref = doc(collection(db, "invocacoes"));
+  const base = { campanhaId, mestreUid: auth.currentUser.uid, personagemId: null, personagemNome: "",
+                 jogadorUid: null, jogadorNome: "", controle: false, nome };
+  const batch = writeBatch(db);
+  batch.set(ref, { ...base, tamanho: "", custo: "", ficha: {}, criadoEm: serverTimestamp() });
+  batch.set(doc(db, "invVivo", ref.id), {
+    ...base, pv: { atual: 0, total: 0, temp: 0 }, pc: { atual: 0, total: 0 }, pe: { atual: 0, total: 0 }
+  });
+  await batch.commit();
+  return ref.id;
+}
+
+export async function getInvocacao(id) {
+  const s = await getDoc(doc(db, "invocacoes", id));
+  return s.exists() ? { id: s.id, ...s.data() } : null;
+}
+export async function getInvVivo(id) {
+  const s = await getDoc(doc(db, "invVivo", id));
+  return s.exists() ? s.data() : {};
+}
+
+const lerInv = (q, fn, aoErro) =>
+  onSnapshot(q, (snap) => fn(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), aoErro);
+export const escutarInvocacoesCampanha = (campId, fn, aoErro) => lerInv(query(collection(db, "invVivo"),
+  where("mestreUid", "==", auth.currentUser.uid), where("campanhaId", "==", campId)), fn, aoErro);
+export const escutarInvocacoesDoJogador = (fn, aoErro) => lerInv(query(collection(db, "invVivo"),
+  where("jogadorUid", "==", auth.currentUser.uid)), fn, aoErro);
+
+export async function salvarInvocacao(invId, topo, ficha) {
+  const batch = writeBatch(db);
+  batch.update(doc(db, "invocacoes", invId), { ...topo, ficha, atualizadoEm: serverTimestamp() });
+  batch.update(doc(db, "invVivo", invId), { nome: topo.nome, atualizadoEm: serverTimestamp() });
+  await batch.commit();
+}
+
+// Vincula a invocação a um personagem (o invocador); só o mestre muda. p = { id, nome, donoUid, donoNome } ou null
+export async function definirPersonagemInv(invId, p, controle) {
+  const campos = p
+    ? { personagemId: p.id, personagemNome: p.nome, jogadorUid: p.donoUid, jogadorNome: p.donoNome || "", controle: !!controle }
+    : { personagemId: null, personagemNome: "", jogadorUid: null, jogadorNome: "", controle: false };
+  const batch = writeBatch(db);
+  batch.update(doc(db, "invocacoes", invId), campos);
+  batch.update(doc(db, "invVivo", invId), campos);
+  await batch.commit();
+}
+
+export async function apagarInvocacao(invId) {
+  const batch = writeBatch(db);
+  batch.delete(doc(db, "invocacoes", invId));
+  batch.delete(doc(db, "invVivo", invId));
+  await batch.commit();
+}
+
+// Invocações vinculadas a um personagem: papel "jogador" (dono do personagem) ou "mestre"
+export const escutarInvocacoesDoPersonagem = (persId, papel, fn, aoErro) => lerInv(query(collection(db, "invVivo"),
+  where(papel === "mestre" ? "mestreUid" : "jogadorUid", "==", auth.currentUser.uid),
+  where("personagemId", "==", persId)), fn, aoErro);

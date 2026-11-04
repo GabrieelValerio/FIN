@@ -165,3 +165,5 @@ th{font-family:Rajdhani,sans-serif;letter-spacing:.08em;text-transform:uppercase
 /* O atributo hidden precisa vencer display:flex/grid dos componentes */
 [hidden]{display:none!important}
 input[type=search]{width:100%;margin-bottom:.3rem}
+
+.tiles input[type=text]{width:6rem}

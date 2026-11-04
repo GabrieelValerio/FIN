@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Invocação - Fin</title>
+  <link rel="icon" type="image/png" href="assets/icons/icon.png?v=2">
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <div class="layout">
+    <nav class="lateral" id="menu"></nav>
+    <div class="conteudo">
+      <header class="topo">
+        <a id="voltar" href="inicio.html">← Início</a>
+        <h1 id="titulo">Invocação</h1>
+        <small id="subtitulo"></small>
+        <p><button id="btnSalvar" class="principal">Salvar ficha</button> <span id="estado"></span></p>
+      </header>
+      <main id="ficha"></main>
+    </div>
+  </div>
+
+  <script type="module">
+    import { aoMudarLogin, getInvocacao, getInvVivo, salvarPontosInv, enviarPontosInv, salvarInvocacao,
+             definirPersonagemInv, listarCampanha } from "./db.js";
+
+    const $ = (id) => document.getElementById(id);
+    const el = (tag, texto) => { const e = document.createElement(tag); if (texto) e.textContent = texto; return e; };
+    const invId = new URLSearchParams(location.search).get("id");
+    const de = new URLSearchParams(location.search).get("de") || "";
+    if (de.startsWith("campanha:")) {
+      $("voltar").href = "campanha.html?id=" + encodeURIComponent(de.slice(9));
+      $("voltar").textContent = "← Campanha";
+    } else if (de.startsWith("personagem:")) {
+      $("voltar").href = "personagem.html?id=" + encodeURIComponent(de.slice(11));
+      $("voltar").textContent = "← Personagem";
+    }
+    let inv, vivo, ficha, topo, personagens = [], ehMestre = false, areaVivo, abaAtual, naoSalvo = false;
+    const somenteLeitura = false; // esta página só abre para o mestre ou para quem tem o controle
+
+    const PERICIAS = [
+      ["atletismo","Atletismo","FOR"],["furtividade","Furtividade","AGI"],["acrobacia","Acrobacia","AGI"],
+      ["iniciativa","Iniciativa","AGI"],["intimidacao","Intimidação","PRE"],["percepcao","Percepção","PRE"],
+      ["reflexos","Reflexos","AGI"],["vontade","Vontade","PRE"],["taijutsu","Taijutsu","FOR"],
+      ["kenjutsu","Kenjutsu","AGI"],["ninjutsu","Ninjutsu","PRE/INT/AGI"],["genjutsu","Genjutsu","PRE"],
+      ["fuinjutsu","Fuinjutsu","INT"],["kuchiyose","Kuchiyose","INT"],["pontaria","Pontaria","AGI"],
+      ["medicina","Medicina","INT"],["tecnicasSensoriais","Técnicas Sensoriais","INT"],["ciencias","Ciências","INT"],
+      ["investigacao","Investigação","INT"],["enganacao","Enganação","PRE"],["intuicao","Intuição","PRE"],
+      ["sobrevivencia","Sobrevivência","INT"],["fortitude","Fortitude","VIG"],["taticaEstrategia","Tática e Estratégia","INT"]
+    ];
+    const ELEMENTOS_TEC = ["Nenhum","Fogo","Vento","Relâmpago","Terra","Água","Kekkei Genkai","Yin/Yang"];
+    const ELEM_CLASSE = { "Fogo": "fogo", "Vento": "vento", "Relâmpago": "relampago", "Terra": "terra", "Água": "agua",
+                          "Kekkei Genkai": "kg", "Yin/Yang": "yinyang", "Nenhum": "nenhum" };
+    const RANKS = ["E", "D", "C", "B", "A", "S"];
+    const ACOES = ["—", "Livre", "Padrão", "Movimento", "Reação", "Completa"]; // "—" = não definido
+
+    function sujo() { naoSalvo = true; $("estado").textContent = "Alterações não salvas"; }
+    const sub = (obj, chave) => (obj[chave] = obj[chave] || {});
+    function entrada(tipo, valor, aoMudar, opcoes) {
+      let e;
+      if (tipo === "a") e = el("textarea");
+      else if (tipo === "s") { e = el("select"); opcoes.forEach((o) => e.add(new Option(o, o))); }
+      else { e = el("input"); e.type = tipo === "c" ? "checkbox" : tipo === "n" ? "number" : "text"; }
+      if (tipo === "c") e.checked = !!valor;
+      else e.value = valor === undefined || valor === null ? (tipo === "n" ? 0 : tipo === "s" ? opcoes[0] : "") : valor;
+      const numerico = tipo === "n" || (tipo === "s" && typeof opcoes[0] === "number");
+      e.oninput = () => aoMudar(tipo === "c" ? e.checked : numerico ? Number(e.value) : e.value);
+      e.disabled = somenteLeitura;
+      return e;
+    }
+    function campo(pai, rotulo, obj, chave, tipo, opcoes) {
+      const l = el("label");
+      l.append(rotulo + " ", entrada(tipo, obj[chave], (v) => { obj[chave] = v; sujo(); }, opcoes));
+      pai.append(l);
+    }
+    function botao(texto, fn) {
+      const b = el("button", texto);
+      b.type = "button";
+      b.disabled = somenteLeitura;
+      b.onclick = fn;
+      return b;
+    }
+    function secao(titulo, pai, classe) {
+      const f = el("fieldset");
+      if (classe) f.className = classe;
+      f.append(el("legend", titulo));
+      (pai || $("ficha")).append(f);
+      return f;
+    }
+    function lista(pai, arr, colunas, novo, rotuloBotao) {
+      const area = el("div");
+      const desenhar = () => {
+        area.replaceChildren(...arr.map((item, k) => {
+          const linha = el("div");
+          linha.className = "linha";
+          linha._texto = () => Object.values(item).join(" ");
+          colunas.forEach(([chave, rotulo, tipo, opcoes]) => campo(linha, rotulo, item, chave, tipo, opcoes));
+          linha.append(botao("Remover", () => { arr.splice(k, 1); sujo(); desenhar(); }));
+          return linha;
+        }));
+        aplicarBusca();
+      };
+      pai.append(area, botao(rotuloBotao, () => {
+        if ($("busca")) { $("busca").value = ""; } // o item novo precisa aparecer
+        arr.push(novo());
+        sujo();
+        desenhar();
+      }));
+      desenhar();
+    }
+    const medidas = [];
+    const norm = (s) => String(s === undefined || s === null ? "" : s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    function aplicarBusca() {
+      const campo = $("busca");
+      if (!campo) return;
+      const termos = norm(campo.value).split(/\s+/).filter(Boolean);
+      let visiveis = 0, total = 0;
+      $("ficha").querySelectorAll(".linha, .card-tec").forEach((e) => {
+        if (!e._texto) return;
+        total++;
+        const ok = e.classList.contains("edicao") || termos.every((t) => norm(e._texto()).includes(t));
+        e.hidden = !ok;
+        if (ok) visiveis++;
+      });
+      $("buscaInfo").textContent = termos.length ? visiveis + " de " + total + " resultado(s)" : "";
+      requestAnimationFrame(() => medidas.forEach((m) => m()));
+    }
+    const DELIM = ["**", "__", "`"];
+    function formatar(texto) {
+      const partes = String(texto).split(/(\*\*|__|`)/);
+      const contagem = { "**": 0, "__": 0, "`": 0 }, ultimo = {};
+      partes.forEach((p, k) => { if (DELIM.includes(p)) { contagem[p]++; ultimo[p] = k; } });
+      // marcador sem par (o último de cada tipo, se a contagem for ímpar) fica como texto normal
+      const solto = new Set(DELIM.filter((d) => contagem[d] % 2 === 1).map((d) => ultimo[d]));
+      const est = { "**": false, "__": false, "`": false };
+      const frag = document.createDocumentFragment();
+      partes.forEach((p, k) => {
+        if (DELIM.includes(p) && !solto.has(k)) { est[p] = !est[p]; return; }
+        if (!p) return;
+        let no = document.createTextNode(p);
+        if (est["`"]) { const e = el("em"); e.append(no); no = e; }
+        if (est["__"]) { const e = el("u"); e.append(no); no = e; }
+        if (est["**"]) { const e = el("strong"); e.append(no); no = e; }
+        frag.append(no);
+      });
+      return frag;
+    }
+    const emEdicao = new WeakSet(), copias = new WeakMap();
+    function tecnicasUI(pai) {
+      ficha.tecnicas = ficha.tecnicas || [];
+      const area = el("div");
+      area.className = "tecnicas";
+
+      const form = (t, k) => {
+        const box = el("div");
+        box.className = "card-tec edicao";
+        const campos = (lista) => lista.forEach(([c, r, tp, op]) => campo(box, r, t, c, tp, op));
+        // mini botão que alterna o tipo (ex.: Dano/Cura) ao lado do valor
+        const tipoValor = (chaveTipo, chaveValor, [a, b]) => {
+          const l = el("label");
+          const mostra = () => (t[chaveTipo] === b[0] ? b[1] : a[1]);
+          const btn = botao(mostra(), () => {
+            t[chaveTipo] = t[chaveTipo] === b[0] ? a[0] : b[0];
+            btn.textContent = mostra();
+            sujo();
+          });
+          btn.className = "mini-botao";
+          btn.title = "Clique para alternar";
+          l.append(btn, " ", entrada("t", t[chaveValor], (v) => { t[chaveValor] = v; sujo(); }));
+          box.append(l);
+        };
+        campos([["nome","Nome","t"],["rank","Rank","s",RANKS],["elemento","Elemento","s",ELEMENTOS_TEC],
+                ["acao","Tipo de ação","s",ACOES],["alcance","Alcance","t"],["alvos","Alvos","t"],["duracao","Duração","t"]]);
+        tipoValor("custoTipo", "custo", [["custo", "Custo de chakra"], ["absorvido", "Chakra absorvido"]]);
+        tipoValor("danoTipo", "dano", [["dano", "Dano"], ["cura", "Cura"]]);
+        campos([["origem","Origem","s",["sistema","criada","modificada"]],["descricao","Descrição","a"]]);
+        box.append(el("small", "Na descrição: **negrito**, `itálico` e __sublinhado__ (dá para combinar, por exemplo **__assim__**)."));
+        const acoes = el("div");
+        acoes.className = "acoes";
+        acoes.append(
+          botao("Salvar técnica", async () => {
+            if (!(t.nome || "").trim()) { $("estado").textContent = "Dê um nome à técnica."; return; }
+            emEdicao.delete(t);
+            desenhar();
+            await salvarTudo();
+          }),
+          botao("Cancelar", () => {
+            const antes = copias.get(t);
+            if (antes) Object.assign(t, antes); else ficha.tecnicas.splice(k, 1);
+            emEdicao.delete(t);
+            desenhar();
+          }));
+        box.append(acoes);
+        return box;
+      };
+
+      const card = (t, k) => {
+        const box = el("div");
+        box.className = "card-tec";
+        box._texto = () => "rank " + Object.values(t).join(" ");
+        box.append(el("h3", t.nome || "(sem nome)"));
+        const sub = el("div");
+        sub.className = "sub";
+        const elem = el("span", t.elemento || "Nenhum");
+        elem.className = "elem e-" + (ELEM_CLASSE[t.elemento] || "nenhum");
+        sub.append("RANK " + (t.rank || "?") + " - ", elem);
+        box.append(sub);
+        const custoRot = t.custoTipo === "absorvido" ? "Chakra absorvido" : "Custo de chakra";
+        const danoRot = t.danoTipo === "cura" ? "Cura" : "Dano";
+        const meta = [t.acao && t.acao !== "—" && "Ação " + t.acao, t.alcance && "Alcance " + t.alcance,
+                      t.alvos && "Alvos " + t.alvos, t.duracao && "Duração " + t.duracao,
+                      t.custo && custoRot + " " + t.custo, t.dano && danoRot + " " + t.dano, t.origem]
+          .filter(Boolean).join(" · ");
+        if (meta) box.append(el("small", meta));
+        if (t.descricao) {
+          const d = el("div");
+          d.className = "desc recolhida";
+          d.append(formatar(t.descricao));
+          const ler = el("button", "… LER MAIS");
+          ler.type = "button";
+          ler.className = "ler";
+          ler.hidden = true;
+          ler.onclick = () => {
+            const recolhida = d.classList.toggle("recolhida");
+            ler.textContent = recolhida ? "… LER MAIS" : "LER MENOS";
+          };
+          box.append(d, ler);
+          medidas.push(() => { ler.hidden = d.classList.contains("recolhida") ? !(d.scrollHeight > d.clientHeight + 1) : false; });
+        }
+        const acoes = el("div");
+        acoes.className = "acoes";
+        acoes.append(
+          botao("Editar", () => {
+            copias.set(t, { ...t });
+            if (!RANKS.includes(t.rank)) t.rank = "E";
+            emEdicao.add(t);
+            desenhar();
+          }),
+          botao("Remover", () => {
+            if (!confirm("Remover a técnica " + (t.nome || "") + "?")) return;
+            ficha.tecnicas.splice(k, 1);
+            sujo();
+            desenhar();
+          }));
+        box.append(acoes);
+        return box;
+      };
+
+      const desenhar = () => {
+        medidas.length = 0;
+        area.replaceChildren(...ficha.tecnicas.map((t, k) => (emEdicao.has(t) ? form(t, k) : card(t, k))));
+        aplicarBusca();
+        requestAnimationFrame(() => medidas.forEach((m) => m()));
+      };
+      pai.append(area, botao("Adicionar técnica", () => {
+        const t = { nome: "", rank: "E", elemento: "Nenhum", acao: "—", alcance: "", alvos: "", duracao: "", custoTipo: "custo", custo: "", danoTipo: "dano", dano: "", origem: "criada", descricao: "" };
+        ficha.tecnicas.push(t);
+        copias.set(t, null);
+        emEdicao.add(t);
+        desenhar();
+      }));
+      desenhar();
+    }
+
+    // ---------- Pontos (PV, PC, PE): gravam sozinhos ----------
+    function recurso(k, nome) {
+      const r = (vivo[k] = vivo[k] || { atual: 0, total: 0 });
+      const div = el("div");
+      div.className = "recurso alerta";
+      const barra = el("div"), preenche = el("i");
+      barra.className = "barra r-" + k;
+      barra.append(preenche);
+      const pintar = () => {
+        const pct = r.total > 0 ? (r.atual / r.total) * 100 : 100;
+        preenche.style.width = (r.total > 0 ? Math.max(0, Math.min(100, pct)) : 0) + "%";
+        div.classList.toggle("meio", r.total > 0 && pct < 50);
+        div.classList.toggle("critico", r.total > 0 && pct <= 25);
+      };
+      const enviar = (c, v) => { r[c] = v; salvarPontosInv(invId, k + "." + c, v); pintar(); };
+      const atual = entrada("n", r.atual, (v) => enviar("atual", v));
+      const mexer = (d) => { const novo = r.atual + d; atual.value = novo; enviar("atual", novo); };
+      const controles = el("div");
+      controles.className = "controles";
+      controles.append(botao("-", () => mexer(-1)), atual, botao("+", () => mexer(1)), " de ",
+                       entrada("n", r.total, (v) => enviar("total", v)));
+      if (k === "pv") controles.append(" temp ", entrada("n", r.temp || 0, (v) => enviar("temp", v)));
+      div.append(el("strong", nome), barra, controles);
+      pintar();
+      return div;
+    }
+
+    function renderVivo() {
+      if (!areaVivo || !areaVivo.isConnected) return;
+      areaVivo.replaceChildren(areaVivo.querySelector("legend"),
+        ...[["pv", "PV"], ["pc", "PC (Chakra)"], ["pe", "PE (Esforço)"]].map(([k, nome]) => recurso(k, nome)));
+    }
+
+    // ---------- Vínculo com um personagem: o invocador (só o mestre muda) ----------
+    function invocadorUI(pai) {
+      if (!ehMestre) {
+        pai.append(el("p", "Invocador: " + (inv.personagemNome || "-") + " (você controla esta ficha)"));
+        return;
+      }
+      const lista = personagens.slice();
+      if (inv.personagemId && !lista.some((p) => p.id === inv.personagemId)) {
+        lista.push({ id: inv.personagemId, nome: inv.personagemNome, donoUid: inv.jogadorUid, donoNome: inv.jogadorNome });
+      }
+      const sel = el("select");
+      sel.add(new Option("(ninguém)", ""));
+      lista.forEach((p) => sel.add(new Option(p.nome + (p.donoNome ? " (" + p.donoNome + ")" : ""), p.id)));
+      sel.value = inv.personagemId || "";
+      const cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = !!inv.controle;
+      cb.disabled = !inv.personagemId;
+      const aplicar = async () => {
+        try {
+          const p = lista.find((x) => x.id === sel.value) || null;
+          const controle = p ? cb.checked : false;
+          await definirPersonagemInv(invId, p, controle);
+          inv.personagemId = p ? p.id : null;
+          inv.personagemNome = p ? p.nome : "";
+          inv.jogadorUid = p ? p.donoUid : null;
+          inv.jogadorNome = p ? (p.donoNome || "") : "";
+          inv.controle = controle;
+          cb.disabled = !p;
+          if (!p) cb.checked = false;
+          $("subtitulo").textContent = "Invocação" + (p ? " · Invocador: " + p.nome : "");
+          $("estado").textContent = "Vínculo atualizado.";
+        } catch (e) { $("estado").textContent = "Erro: " + e.message; }
+      };
+      sel.onchange = aplicar;
+      cb.onchange = aplicar;
+      const l1 = el("label"), l2 = el("label");
+      l1.append("Personagem ", sel);
+      l2.append(cb, " Controle da ficha");
+      pai.append(l1, l2, el("p"),
+        el("small", "Os pontos da criatura aparecem na ficha do personagem. Com o controle ligado, o dono dele também edita a ficha da criatura."));
+    }
+
+    // ---------- Abas ----------
+    const ABAS = {
+      inicio() {
+        const grade = el("div");
+        grade.className = "grade";
+        const esq = el("div"), dir = el("div");
+        grade.append(esq, dir);
+        $("ficha").append(grade);
+
+        let s = secao("Atributos", esq, "tiles");
+        [["AGI","agi"],["FOR","for"],["INT","int"],["PRE","pre"],["VIG","vig"]]
+          .forEach(([r, k]) => campo(s, r, sub(ficha, "atributos"), k, "n"));
+        areaVivo = secao("Pontos", esq);
+        renderVivo();
+        s = secao("Valores", esq, "tiles");
+        [["Defesa","defesa"],["Esquiva","esquiva"],["Bloqueio","bloqueio"]]
+          .forEach(([r, k]) => campo(s, r, sub(ficha, "valores"), k, "n"));
+        campo(s, "Deslocamento", sub(ficha, "valores"), "deslocamento", "t");
+
+        s = secao("Identificação", dir);
+        campo(s, "Nome", topo, "nome", "t");
+        campo(s, "Tamanho", topo, "tamanho", "t");
+        campo(s, "Custo de invocação", topo, "custo", "t");
+        const ap = sub(ficha, "aparencia");
+        campo(s, "Vilarejo", ap, "vilarejo", "t");
+        campo(s, "Idade", ap, "idade", "n");
+        campo(s, "Sexo", ap, "sexo", "t");
+
+        s = secao("Invocador", dir);
+        invocadorUI(s);
+      },
+
+      tecnicas() {
+        const busca = el("input");
+        busca.id = "busca";
+        busca.type = "search";
+        busca.placeholder = "Pesquisar ataques e técnicas (nome, elemento, rank, dano, descrição...)";
+        busca.oninput = aplicarBusca;
+        const info = el("small");
+        info.id = "buscaInfo";
+        $("ficha").append(busca, info);
+        let s = secao("Ataques");
+        ficha.ataques = ficha.ataques || [];
+        lista(s, ficha.ataques,
+              [["arma","Arma"],["tipo","Tipo"],["alcance","Alcance"],["dado","Dado (ex.: 3d20)"],["dano","Dano"],["critico","Crítico"],["especial","Especial"]]
+                .map(([k, r]) => [k, r, "t"]),
+              () => ({ arma: "", tipo: "", alcance: "", dado: "", dano: "", critico: "", especial: "" }), "Adicionar ataque");
+        s = secao("Técnicas");
+        tecnicasUI(s);
+      },
+      pericias() {
+        const s = secao("Perícias (marque P se tiver proficiência)", null, "duas");
+        PERICIAS.forEach(([k, nome, atr]) => {
+          const o = sub(sub(ficha, "pericias"), k);
+          delete o.f;
+          const linha = el("div");
+          linha.className = "linha";
+          linha.append(el("strong", nome + " (" + atr + ")"));
+          campo(linha, "P", o, "p", "c");
+          campo(linha, "Valor", o, "valor", "n");
+          if (k === "ninjutsu") { o.atributo = o.atributo || "PRE"; campo(linha, "Atributo", o, "atributo", "s", ["PRE", "INT", "AGI"]); }
+          s.append(linha);
+        });
+      },
+      elementos() {
+        const s = secao("Elementos");
+        [["Fogo","fogo"],["Vento","vento"],["Relâmpago","relampago"],["Terra","terra"],["Água","agua"],["Yin","yin"],["Yang","yang"]]
+          .forEach(([r, k]) => campo(s, r, sub(ficha, "elementos"), k, "c"));
+      }
+    };
+
+    function abrir(nome) {
+      abaAtual = nome;
+      areaVivo = null;
+      $("ficha").replaceChildren();
+      ABAS[nome]();
+      location.hash = nome;
+      document.querySelectorAll("#menu button").forEach((b) => b.classList.toggle("ativo", b.dataset.aba === nome));
+    }
+
+    function montarMenu() {
+      $("menu").replaceChildren(...[["inicio","Início"],["tecnicas","Técnicas"],["pericias","Perícias"],["elementos","Elementos"]]
+        .map(([k, nome]) => {
+          const b = el("button", nome);
+          b.dataset.aba = k;
+          b.onclick = () => abrir(k);
+          return b;
+        }));
+    }
+
+    // ---------- Salvar ficha (manual) ----------
+    async function salvarTudo() {
+      try {
+        await salvarInvocacao(invId, topo, ficha);
+        naoSalvo = false;
+        $("titulo").textContent = topo.nome;
+        $("estado").textContent = "Ficha salva.";
+      } catch (e) {
+        $("estado").textContent = "Erro: " + e.message;
+      }
+    }
+    $("btnSalvar").onclick = salvarTudo;
+
+    window.onbeforeunload = () => (naoSalvo ? true : undefined);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden" && invId) enviarPontosInv(invId);
+    });
+
+    // ---------- Carregar ----------
+    aoMudarLogin(async (user) => {
+      if (!user) { location.href = "login.html?volta=" + encodeURIComponent(location.pathname.split("/").pop() + location.search); return; }
+      try {
+        inv = await getInvocacao(invId);
+        if (!inv) throw new Error("Invocação não encontrada.");
+        ehMestre = inv.mestreUid === user.uid;
+        vivo = await getInvVivo(invId);
+        ficha = inv.ficha || {};
+        topo = { nome: inv.nome, tamanho: inv.tamanho || "", custo: inv.custo || "" };
+        if (ehMestre) personagens = await listarCampanha(inv.campanhaId);
+        $("titulo").textContent = inv.nome;
+        $("subtitulo").textContent = "Invocação" + (inv.personagemNome ? " · Invocador: " + inv.personagemNome : "");
+        montarMenu();
+        const inicial = location.hash.slice(1);
+        abrir(ABAS[inicial] ? inicial : "inicio");
+      } catch (e) {
+        $("estado").textContent = "Erro: " + e.message;
+      }
+    });
+  </script>
+</body>
+</html>
