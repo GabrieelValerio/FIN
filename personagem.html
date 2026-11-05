@@ -38,7 +38,7 @@
       $("voltar").href = "admin.html";
       $("voltar").textContent = "← Administração";
     }
-    let vivo, ficha, topo, somenteLeitura, areaVivo, areaInv, invocs = [], papelInv = null, nomeSalvo, abaAtual, campId, codigoVer, arenaId, arenaNome, viaCodigo, versaoCompart, encerrando = false, imagens = {}, naoSalvo = false;
+    let vivo, ficha, topo, somenteLeitura, areaVivo, areaInv, invocs = [], papelInv = null, invsCarregadas = false, nomeSalvo, abaAtual, campId, codigoVer, arenaId, arenaNome, viaCodigo, versaoCompart, encerrando = false, imagens = {}, naoSalvo = false;
 
     const PERICIAS = [
       ["atletismo","Atletismo","FOR"],["furtividade","Furtividade","AGI"],["acrobacia","Acrobacia","AGI"],
@@ -217,7 +217,6 @@
     // ---------- Invocações vinculadas a este personagem (pontos ao vivo) ----------
     function renderInvocacoes() {
       if (!areaInv || !areaInv.isConnected) return;
-      areaInv.hidden = !invocs.length;
       const barra = (nome, r, cor) => {
         const d = el("div");
         d.className = "recurso";
@@ -232,6 +231,11 @@
         return d;
       };
       invocs.sort((a, b) => (a.nome || "").localeCompare(b.nome || ""));
+      if (!invocs.length) {
+        areaInv.replaceChildren(areaInv.querySelector("legend"),
+          el("p", invsCarregadas ? "Nenhuma invocação vinculada a este personagem." : "Carregando..."));
+        return;
+      }
       areaInv.replaceChildren(areaInv.querySelector("legend"), ...invocs.map((p) => {
         const c = el("div");
         c.className = "card";
@@ -499,8 +503,6 @@
           .forEach(([r, k]) => campo(s, r, sub(ficha, "atributos"), k, "n"));
         areaVivo = secao("Pontos", esq);
         renderVivo();
-        areaInv = secao("Invocações", esq);
-        renderInvocacoes();
         s = secao("Valores", esq, "tiles");
         const tile = el("label");
         const saida = el("output");
@@ -529,6 +531,11 @@
         s.append(retrato);
         atualizarRetrato();
         if (!somenteLeitura) s.append(slotImagem("normal"), slotImagem("ferido"));
+      },
+
+      invocacoes() {
+        areaInv = secao("Invocações");
+        renderInvocacoes();
       },
 
       tecnicas() {
@@ -727,6 +734,7 @@
     function montarMenu() {
       const itens = [["inicio","Início"],["tecnicas","Técnicas"],["pericias","Perícias"],
                      ["elementos","Elementos"],["equipamentos","Equipamentos"],["textos","Textos"]];
+      if (papelInv) itens.push(["invocacoes","Invocações"]);
       if (!somenteLeitura) itens.push(["ferramentas","🛠️"], ["perigo","💀"]);
       $("menu").replaceChildren(...itens.map(([k, nome]) => {
         const b = el("button", nome);
@@ -803,12 +811,13 @@
         versaoCompart = vivo.compartVersao || 0;
         definirArena(persId, somenteLeitura ? null : arenaId);
         papelInv = !somenteLeitura ? "jogador" : (p.mestreUid === user.uid ? "mestre" : null);
-        if (papelInv) escutarInvocacoesDoPersonagem(persId, papelInv, (lista) => { invocs = lista; renderInvocacoes(); }, () => {});
+        if (papelInv) escutarInvocacoesDoPersonagem(persId, papelInv, (lista) => { invocs = lista; invsCarregadas = true; renderInvocacoes(); },
+          () => { invsCarregadas = true; renderInvocacoes(); });
         $("titulo").textContent = p.nome + (somenteLeitura ? " (somente leitura)" : "");
         $("btnSalvar").hidden = somenteLeitura;
         montarMenu();
         const inicial = location.hash.slice(1);
-        abrir(ABAS[inicial] && (!["perigo", "ferramentas"].includes(inicial) || !somenteLeitura) ? inicial : "inicio");
+        abrir(ABAS[inicial] && (!["perigo", "ferramentas"].includes(inicial) || !somenteLeitura) && (inicial !== "invocacoes" || papelInv) ? inicial : "inicio");
         // Quem vê pelo código é desconectado na hora se o dono desativar ou trocar o código
         const encerrado = () => {
           if (encerrando) return;
